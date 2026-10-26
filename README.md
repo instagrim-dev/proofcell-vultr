@@ -31,24 +31,19 @@ There are no application dependencies or runnable application yet.
 
 ## Continuous integration
 
-The `validate-scaffold` job in `.github/workflows/ci.yml` runs on pushes,
-pull requests, and manual dispatch. It checks that the README and MIT license
-are present and nonempty, and that the scaffold directories exist. It uses a
-GitHub-hosted Ubuntu runner with read-only repository access and requires no
-project secrets.
+Local validation is the primary check path. Hosted GitHub CI is unavailable
+under the project cost policy; the retained Actions workflow is manual-only and
+does not run automatically on pushes or pull requests.
 
-Run the same checks locally from the repository root:
+Run from the repository root:
 
 ```sh
-set -eu
-test -s README.md
-test -s LICENSE
-grep -qx 'MIT License' LICENSE
-for directory in api inference orchestrator runner verifier infra; do
-  test -d "$directory"
-done
-printf 'Scaffold checks passed.\n'
+sh scripts/check.sh
 ```
+
+The command checks the README, MIT license, and scaffold directories without
+network access or project secrets. The optional manual workflow runs this same
+script; it is not required for local readiness.
 
 These checks validate repository setup. Implementation and evaluation checks
 will be added as the project develops.

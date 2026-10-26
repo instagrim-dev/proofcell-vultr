@@ -1,8 +1,7 @@
 name: CI
 
+# Manual-only: hosted GitHub CI is unavailable under the project cost policy.
 "on":
-  push:
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -19,12 +18,4 @@ jobs:
           persist-credentials: false
       - name: Validate scaffold
         shell: sh
-        run: |
-          set -eu
-          test -s README.md
-          test -s LICENSE
-          grep -qx 'MIT License' LICENSE
-          for directory in api inference orchestrator runner verifier infra; do
-            test -d "$directory"
-          done
-          printf 'Scaffold checks passed.\n'
+        run: sh scripts/check.sh
