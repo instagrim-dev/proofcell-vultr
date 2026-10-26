@@ -1,0 +1,30 @@
+name: CI
+
+"on":
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-scaffold:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Validate scaffold
+        shell: sh
+        run: |
+          set -eu
+          test -s README.md
+          test -s LICENSE
+          grep -qx 'MIT License' LICENSE
+          for directory in api inference orchestrator runner verifier infra; do
+            test -d "$directory"
+          done
+          printf 'Scaffold checks passed.\n'
