@@ -17,7 +17,7 @@ The current implementation is only the local fixed Docker canary described in th
 
 ## Work plan
 
-- Confirm LabLab enrollment and Discord connection; the event page requires both. The current browser session reached the LabLab sign-in screen, so enrollment has not been verified.
+- LabLab screening submitted; the event page shows **Enrolled**. Discord is connected, the LABLAB community is joined, and the closed solo [ProofCell team](https://lablab.ai/ai-hackathons/vultr-hackathon/proofcell) is created. The project has not yet been submitted.
 - At kickoff, obtain the gift code, verify an eligible Vultr account and credit balance, and provision the VM and Serverless Inference only when available.
 - Implement a narrow review workflow, the Vultr inference client and a disposable runner; demonstrate a real success, a real failed check and one containment moment.
 - Record provenance and teardown for each run, and test the hosted path. Keep the access key in the control service, not the runner.
