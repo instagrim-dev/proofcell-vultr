@@ -430,3 +430,55 @@ func TestPublishedRecoveryOnlyLooksUpExistingPR(t *testing.T) {
 		t.Fatalf("Published = %q %v", got, err)
 	}
 }
+
+func TestNativeCheckPayloadAndHead(t *testing.T) {
+	c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/app/installations/7/access_tokens":
+			var input struct {
+				Permissions map[string]string `json:"permissions"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			if input.Permissions["checks"] != "write" {
+				t.Error("missing checks permission")
+			}
+			fmt.Fprint(w, `{"token":"install"}`)
+		case "/repos/acme/project/pulls/9":
+			fmt.Fprint(w, `{"head":{"sha":"abc123"}}`)
+		case "/repos/acme/project/check-runs":
+			var input struct {
+				Head       string `json:"head_sha"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+				Actions    []struct {
+					Identifier string `json:"identifier"`
+				} `json:"actions"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			if input.Head != "abc123" || input.Status != "completed" || input.Conclusion != "neutral" || len(input.Actions) != 2 || input.Actions[0].Identifier != "revalidate" || input.Actions[1].Identifier != "show_decision" {
+				t.Errorf("invalid check request: %+v", input)
+			}
+			fmt.Fprint(w, `{"id":88}`)
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	ctx := context.Background()
+	head, err := c.PRHead(ctx, 7, "acme/project", "https://github.com/acme/project/pull/9")
+	if err != nil || head != "abc123" {
+		t.Fatalf("head %q: %v", head, err)
+	}
+	if _, err := c.PRHead(ctx, 7, "acme/project", "https://evil.example/pull/9"); err == nil {
+		t.Fatal("accepted foreign PR URL")
+	}
+	id, err := c.CreateDecisionCheck(ctx, 7, "acme/project", head, "patch")
+	if err != nil || id != 88 {
+		t.Fatalf("check %d: %v", id, err)
+	}
+}

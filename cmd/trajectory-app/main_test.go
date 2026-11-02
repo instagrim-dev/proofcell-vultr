@@ -47,7 +47,7 @@ func TestManifestRegistrationPersistsCredentials(t *testing.T) {
 	if err := json.Unmarshal([]byte(html.UnescapeString(match[1])), &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.RedirectURL != "https://trajectory.example.com/setup/callback" || len(manifest.Permissions) != 4 || manifest.Permissions["metadata"] != "read" {
+	if manifest.RedirectURL != "https://trajectory.example.com/setup/callback" || len(manifest.Permissions) != 5 || manifest.Permissions["metadata"] != "read" {
 		t.Fatalf("unexpected manifest: %#v", manifest)
 	}
 	request := httptest.NewRequest("GET", "https://trajectory.example.com/setup/callback?state="+cookies[0].Value+"&code=registration-code", nil)

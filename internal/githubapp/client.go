@@ -204,7 +204,7 @@ func (c *Client) installationToken(ctx context.Context, installation int64, repo
 		Token string `json:"token"`
 	}
 	err = c.request(ctx, jwt, http.MethodPost, "/app/installations/"+strconv.FormatInt(installation, 10)+"/access_tokens", map[string]any{
-		"repositories": []string{name}, "permissions": map[string]string{"contents": "write", "issues": "write", "pull_requests": "write"},
+		"repositories": []string{name}, "permissions": map[string]string{"contents": "write", "issues": "write", "pull_requests": "write", "checks": "write"},
 	}, &response)
 	if err != nil {
 		return "", err
@@ -532,4 +532,69 @@ func (c *Client) existingPR(ctx context.Context, token, repo, branch, baseBranch
 			return "", nil
 		}
 	}
+}
+
+// ControlComment returns the GitHub ID so later task-list edits can be bound to it.
+func (c *Client) ControlComment(ctx context.Context, installation int64, repo string, number int, body string) (int64, error) {
+	token, err := c.installationToken(ctx, installation, repo)
+	if err != nil {
+		return 0, err
+	}
+	var out struct {
+		ID int64 `json:"id"`
+	}
+	err = c.request(ctx, token, http.MethodPost, repositoryRoute(repo)+"/issues/"+strconv.Itoa(number)+"/comments", map[string]string{"body": body}, &out)
+	if err != nil {
+		return 0, err
+	}
+	if out.ID <= 0 {
+		return 0, errors.New("GitHub returned an invalid comment ID")
+	}
+	return out.ID, nil
+}
+
+func (c *Client) PRHead(ctx context.Context, installation int64, repo, prURL string) (string, error) {
+	prefix := "https://github.com/" + repo + "/pull/"
+	if !strings.HasPrefix(prURL, prefix) {
+		return "", errors.New("invalid pull request URL")
+	}
+	number, err := strconv.Atoi(strings.TrimPrefix(prURL, prefix))
+	if err != nil || number <= 0 {
+		return "", errors.New("invalid pull request number")
+	}
+	token, err := c.installationToken(ctx, installation, repo)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if err = c.request(ctx, token, http.MethodGet, repositoryRoute(repo)+"/pulls/"+strconv.Itoa(number), nil, &out); err != nil {
+		return "", err
+	}
+	if out.Head.SHA == "" {
+		return "", errors.New("GitHub returned an empty PR head")
+	}
+	return out.Head.SHA, nil
+}
+
+func (c *Client) CreateDecisionCheck(ctx context.Context, installation int64, repo, head, patch string) (int64, error) {
+	token, err := c.installationToken(ctx, installation, repo)
+	if err != nil {
+		return 0, err
+	}
+	body := map[string]any{"name": "Trajectory decision", "head_sha": head, "status": "completed", "conclusion": "neutral", "output": map[string]string{"title": "Decision recorded", "summary": "Repository-defined preimage and JSON checks passed. Behavioral sandbox checks are not connected.\n\nPatch SHA-256: `" + patch + "`"}, "actions": []map[string]string{{"label": "Revalidate", "description": "Recheck decision inputs and JSON assertions", "identifier": "revalidate"}, {"label": "Post decision", "description": "Post the decision receipt to the issue", "identifier": "show_decision"}}}
+	var out struct {
+		ID int64 `json:"id"`
+	}
+	err = c.request(ctx, token, http.MethodPost, repositoryRoute(repo)+"/check-runs", body, &out)
+	if err != nil {
+		return 0, err
+	}
+	if out.ID <= 0 {
+		return 0, errors.New("GitHub returned an invalid check ID")
+	}
+	return out.ID, nil
 }

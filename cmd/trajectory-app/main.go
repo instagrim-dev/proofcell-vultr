@@ -220,9 +220,9 @@ func (s setupService) page(w http.ResponseWriter, r *http.Request) {
 		"public":          false,
 		"hook_attributes": map[string]any{"url": s.publicURL + "/webhook", "active": true},
 		"default_permissions": map[string]string{
-			"metadata": "read", "issues": "write", "contents": "write", "pull_requests": "write",
+			"metadata": "read", "issues": "write", "contents": "write", "pull_requests": "write", "checks": "write",
 		},
-		"default_events": []string{"issues", "issue_comment"},
+		"default_events": []string{"issues", "issue_comment", "check_run"},
 	})
 	privatePage(w)
 	if err := setupPage.Execute(w, struct{ PublicURL, Manifest, State string }{s.publicURL, string(manifest), state}); err != nil {

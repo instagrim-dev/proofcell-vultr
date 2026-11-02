@@ -49,6 +49,8 @@ type Config struct {
 	Choices  []Choice `json:"choices"`
 }
 type Plan struct {
+	DecisionComment, PublishComment, CheckID                          int64
+	DecisionBody, PublishBody, CheckHead                              string
 	Pending                                                           bool
 	LastComment                                                       int64
 	ID, IssueDigest, BaseBranch, BaseSHA, Choice, PatchHash, Diff, PR string
@@ -57,6 +59,17 @@ type Plan struct {
 	History                                                           []string
 }
 type Event struct {
+	Kind  string `json:"_kind"`
+	Label struct {
+		Name string `json:"name"`
+	} `json:"label"`
+	CheckRun struct {
+		ID      int64  `json:"id"`
+		HeadSHA string `json:"head_sha"`
+	} `json:"check_run"`
+	RequestedAction struct {
+		Identifier string `json:"identifier"`
+	} `json:"requested_action"`
 	Action       string `json:"action"`
 	Installation struct {
 		ID int64 `json:"id"`
@@ -186,12 +199,16 @@ func (e *Engine) Handler(secret string) http.Handler {
 			http.Error(w, "invalid event", 400)
 			return
 		}
-		if r.Header.Get("X-GitHub-Event") != "issue_comment" || ev.Action != "created" || (len(ev.Issue.PullRequest) > 0 && string(ev.Issue.PullRequest) != "null") || ev.Comment.User.Type == "Bot" || !strings.HasPrefix(strings.TrimSpace(ev.Comment.Body), "/trajectory ") {
+		ev.Kind = r.Header.Get("X-GitHub-Event")
+		isIssue := ev.Kind == "issues" && ev.Action == "labeled" && ev.Label.Name == "trajectory"
+		isComment := ev.Kind == "issue_comment" && ((ev.Action == "created" && ev.Comment.User.Type != "Bot" && strings.HasPrefix(strings.TrimSpace(ev.Comment.Body), "/trajectory ")) || ev.Action == "edited") && (len(ev.Issue.PullRequest) == 0 || string(ev.Issue.PullRequest) == "null")
+		isCheck := ev.Kind == "check_run" && ev.Action == "requested_action"
+		if !isIssue && !isComment && !isCheck {
 			w.WriteHeader(202)
 			return
 		}
 		id := r.Header.Get("X-GitHub-Delivery")
-		if id == "" || len(id) > 200 || ev.Installation.ID <= 0 || ev.Issue.Number <= 0 || !regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`).MatchString(ev.Repository.FullName) {
+		if id == "" || len(id) > 200 || ev.Installation.ID <= 0 || (!isCheck && ev.Issue.Number <= 0) || (isCheck && ev.CheckRun.ID <= 0) || !regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`).MatchString(ev.Repository.FullName) {
 			http.Error(w, "missing event identity", 400)
 			return
 		}
@@ -333,6 +350,45 @@ func validPath(p string) bool {
 }
 func (e *Engine) process(ctx context.Context, ev Event) error {
 	inst, repo, n := ev.Installation.ID, ev.Repository.FullName, ev.Issue.Number
+	if ev.Kind == "check_run" {
+		return e.processCheck(ctx, ev)
+	}
+	if ev.Kind == "issues" {
+		ev.Comment.Body = "/trajectory plan"
+		ev.Comment.ID = 0
+	}
+	if ev.Kind == "issue_comment" && ev.Action == "edited" {
+		p := e.data.Plans[fmt.Sprintf("%d/%s/%d", inst, repo, n)]
+		if p == nil {
+			return nil
+		}
+		switch ev.Comment.ID {
+		case p.DecisionComment:
+			if p.DecisionComment == 0 || p.PR != "" {
+				return nil
+			}
+			choice := ""
+			for _, c := range p.Config.Choices {
+				line := "- [ ] " + c.Title + " <!-- " + c.ID + " -->"
+				if ev.Comment.Body == strings.Replace(p.DecisionBody, line, strings.Replace(line, "[ ]", "[x]", 1), 1) {
+					choice = c.ID
+					break
+				}
+			}
+			if choice == "" {
+				return nil
+			}
+			ev.Comment.Body = "/trajectory choose " + p.ID + " " + choice
+		case p.PublishComment:
+			if p.PublishComment == 0 || ev.Comment.Body != strings.Replace(p.PublishBody, "- [ ] Open draft pull request", "- [x] Open draft pull request", 1) {
+				return nil
+			}
+			ev.Comment.Body = "/trajectory publish " + p.ID + " " + p.PatchHash[:12]
+		default:
+			return nil
+		}
+		ev.Comment.ID = 0
+	}
 	ok, err := e.api.CanWrite(ctx, inst, repo, ev.Sender.Login)
 	if err != nil {
 		return err
@@ -375,7 +431,7 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		}
 		ids := map[string]bool{}
 		for _, c := range cfg.Choices {
-			if !regexp.MustCompile(`^[a-z0-9-]{1,40}$`).MatchString(c.ID) || ids[c.ID] || c.Title == "" || len(c.Changes) == 0 || len(c.Changes) > 10 || len(c.Checks) == 0 {
+			if !regexp.MustCompile(`^[a-z0-9-]{1,40}$`).MatchString(c.ID) || ids[c.ID] || c.Title == "" || strings.ContainsAny(c.Title, "\r\n<>") || len(c.Changes) == 0 || len(c.Changes) > 10 || len(c.Checks) == 0 {
 				return fmt.Errorf("invalid choice")
 			}
 			ids[c.ID] = true
@@ -391,9 +447,17 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		if err = e.save(); err != nil {
 			return err
 		}
-		msg := "### Trajectory decision `" + id + "`\n" + cfg.Question + "\n\n"
+		msg := "### Trajectory decision `" + id + "`\n" + cfg.Question + "\n\nSelect one option:\n"
 		for _, c := range cfg.Choices {
-			msg += fmt.Sprintf("- **%s** — %s\n  `/trajectory choose %s %s`\n", c.ID, c.Title, id, c.ID)
+			msg += fmt.Sprintf("- [ ] %s <!-- %s -->\n", c.Title, c.ID)
+		}
+		if api, ok := e.api.(nativeAPI); ok {
+			comment, err := api.ControlComment(ctx, inst, repo, n, msg)
+			if err != nil {
+				return err
+			}
+			p.DecisionComment, p.DecisionBody = comment, msg
+			return e.save()
 		}
 		return e.api.Comment(ctx, inst, repo, n, msg)
 	case "choose", "publish":
@@ -497,13 +561,22 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		if err = e.save(); err != nil {
 			return err
 		}
-		return e.api.Comment(ctx, inst, repo, n, fmt.Sprintf("### Selected `%s` · plan `%s`\n\n```diff\n%s```\n\n%d repository-defined JSON checks passed. Behavioral sandbox checks: not connected.\n\nPatch `%s`\nPublish this exact result: `/trajectory publish %s %s`", p.Choice, p.ID, diff, len(selected.Checks), p.PatchHash, p.ID, p.PatchHash[:12]))
+		msg := fmt.Sprintf("### Selected `%s` · plan `%s`\n\n```diff\n%s```\n\n%d repository-defined JSON checks passed. Behavioral sandbox checks: not connected.\n\nPatch `%s`\n\n- [ ] Open draft pull request", p.Choice, p.ID, diff, len(selected.Checks), p.PatchHash)
+		if api, ok := e.api.(nativeAPI); ok {
+			comment, err := api.ControlComment(ctx, inst, repo, n, msg)
+			if err != nil {
+				return err
+			}
+			p.PublishComment, p.PublishBody = comment, msg
+			return e.save()
+		}
+		return e.api.Comment(ctx, inst, repo, n, msg)
 	}
 	if len(parts) != 4 || p.Choice == "" || parts[3] != p.PatchHash[:12] {
 		return fmt.Errorf("publish requires the current selected patch hash")
 	}
 	if p.PR != "" {
-		return nil
+		return e.ensureCheck(ctx, inst, repo, p)
 	}
 	encoded, _ := json.Marshal(p.Files)
 	if hash(encoded) != p.PatchHash {
@@ -541,6 +614,9 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		p.LastComment = ev.Comment.ID
 	}
 	if err = e.save(); err != nil {
+		return err
+	}
+	if err := e.ensureCheck(ctx, inst, repo, p); err != nil {
 		return err
 	}
 	return e.api.Comment(ctx, inst, repo, n, "Draft PR: "+pr+"\nPatch: `"+p.PatchHash+"`")

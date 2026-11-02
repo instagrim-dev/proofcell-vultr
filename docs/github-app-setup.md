@@ -44,7 +44,8 @@ The generated manifest uses these settings:
 | Repository issues permission | Read and write |
 | Repository contents permission | Read and write |
 | Repository pull requests permission | Read and write |
-| Subscribed events | Issues and Issue comment |
+| Repository checks permission | Read and write |
+| Subscribed events | Issues, Issue comment, and Check run |
 
 The form posts its manifest to `https://github.com/settings/apps/new` and follows GitHub's [documented manifest registration flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest), including the server-side code exchange. No real GitHub registration is performed by local tests; they use an HTTP test server.
 
@@ -72,29 +73,13 @@ cp examples/subscription/.trajectory.json examples/subscription/access.go exampl
 
 Commit all three files to the default branch. The config includes SHA-256 preimages for both starting files, including their final newlines. Reformatting or changing either starting file requires updating its digest in both choices.
 
-Open an issue asking how cancellation should affect access, then add a comment as a user with repository write access:
+Open an issue asking how cancellation should affect access and add the `trajectory` label as a repository writer. The app posts a decision comment. Select exactly one checkbox; to change a choice before publishing, clear the previous checkbox first.
 
-```text
-/trajectory plan
-```
+`keep` changes `HasAccess` in `access.go` to return `now < paidUntil`, allowing access before the paid-through boundary. `end` makes `HasAccess` return `false`, revoking access immediately. Both also replace `subscription.json` with the corresponding cancellation state. The app checks the declared JSON values and file preimages; it does not execute the Go code or claim those comparisons prove the behavior.
 
-Read the posted question and choices. Copy its command, including the current plan ID; for example, replace `PLAN_ID` below with the ID in the comment:
+Review the resulting diff and select **Open draft pull request** in the preview comment. The app creates a branch and a draft PR. The PR's **Checks** tab shows a neutral **Trajectory decision** check with two actions: **Revalidate** checks the pinned inputs, preimages and declared JSON assertions again; **Post decision** posts the decision receipt on the issue. Both require repository write access. If the issue, base, or PR head changes, start a fresh decision instead of relying on the old result. Publishing does not merge the PR.
 
-```text
-/trajectory choose PLAN_ID keep
-```
-
-`keep` changes `HasAccess` in `access.go` to return `now < paidUntil`, allowing access before the paid-through boundary. `end` makes `HasAccess` return `false`, revoking access immediately. Both also replace `subscription.json` with the corresponding cancellation state. The patch therefore includes actual Go implementation choices as well as state records. The app checks the declared JSON values and file preimages; it does not execute the Go code or claim those comparisons prove the behavior.
-
-Inspect the resulting patch and check receipt before publishing. Copy its exact publish command, which includes both the plan ID and the first 12 characters of the selected patch hash:
-
-```text
-/trajectory publish PLAN_ID PATCH_HASH
-```
-
-The app creates a branch and draft pull request. Review the diff and the receipt's issue/base references in GitHub. Changing the issue or default branch can make the plan stale; request a new plan when the app reports stale inputs. Publishing does not authorize a merge. To revise an unmerged decision, use the same plan's choose command with the other choice; the app generates a new selected patch and publish command.
-
-For a comparison demo, start from the same unchanged baseline in two separate issues: select `keep` in one and `end` in the other. Show the different `HasAccess` implementations, the `access_granted` and `access_ends` values, and the corresponding check receipts in their draft PRs.
+To compare outcomes, start from the same unchanged baseline in two separate issues. Select `keep` in one and `end` in the other; review the different patches and receipts.
 
 For local behavioral qualification of the example, run this from this project's root:
 
