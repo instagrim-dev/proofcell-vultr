@@ -8,4 +8,5 @@ grep -qx 'MIT License' LICENSE
 for directory in api inference orchestrator runner verifier infra; do
   test -d "$directory"
 done
+go test ./...
 printf 'Scaffold checks passed.\n'
