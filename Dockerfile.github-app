@@ -1,0 +1,13 @@
+FROM golang:1.24 AS build
+WORKDIR /src
+COPY go.mod ./
+COPY cmd/trajectory-app ./cmd/trajectory-app
+COPY internal/githubapp ./internal/githubapp
+RUN mkdir -m 700 /state
+RUN CGO_ENABLED=0 go build -trimpath -o /trajectory-app ./cmd/trajectory-app
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /trajectory-app /trajectory-app
+COPY --from=build --chown=65532:65532 /state /data
+ENV TRAJECTORY_ADDR=0.0.0.0:8080 TRAJECTORY_STATE_DIR=/data
+EXPOSE 8080
+ENTRYPOINT ["/trajectory-app"]

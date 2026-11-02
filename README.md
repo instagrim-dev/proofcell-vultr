@@ -48,3 +48,9 @@ Connect planning and model calls to Vultr Serverless Inference, implement a boun
 ## License
 
 [MIT](LICENSE). Copyright (c) 2026 Jon M.
+
+## Trajectory GitHub App
+
+The separate Go executable in `cmd/trajectory-app` implements installation through a GitHub App manifest, signed webhook delivery, owner decisions in issues, bounded repository-authored code replacements, and publication to dedicated branches and draft PRs. See [setup and issue commands](docs/github-app-setup.md) and [design](docs/github-app-design.md). The [subscription example](examples/subscription/) provides two different decision outcomes and declared JSON checks.
+
+The app publishes the exact checked patch only after an authorized writer requests it. These checks validate file preimages and repository-declared JSON expectations; Vultr inference and hosted behavioral execution are not connected to this App path yet. Existing local demo work remains available separately.
