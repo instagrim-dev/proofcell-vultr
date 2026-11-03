@@ -580,12 +580,16 @@ func (c *Client) PRHead(ctx context.Context, installation int64, repo, prURL str
 	return out.Head.SHA, nil
 }
 
+func decisionActions() []map[string]string {
+	return []map[string]string{{"label": "Revalidate", "description": "Recheck inputs and JSON assertions", "identifier": "revalidate"}, {"label": "Post decision", "description": "Post the decision receipt to the issue", "identifier": "show_decision"}}
+}
+
 func (c *Client) CreateDecisionCheck(ctx context.Context, installation int64, repo, head, patch string) (int64, error) {
 	token, err := c.installationToken(ctx, installation, repo)
 	if err != nil {
 		return 0, err
 	}
-	body := map[string]any{"name": "Trajectory decision", "head_sha": head, "status": "completed", "conclusion": "neutral", "output": map[string]string{"title": "Decision recorded", "summary": "Repository-defined preimage and JSON checks passed. Behavioral sandbox checks are not connected.\n\nPatch SHA-256: `" + patch + "`"}, "actions": []map[string]string{{"label": "Revalidate", "description": "Recheck inputs and JSON assertions", "identifier": "revalidate"}, {"label": "Post decision", "description": "Post the decision receipt to the issue", "identifier": "show_decision"}}}
+	body := map[string]any{"name": "Trajectory decision", "head_sha": head, "status": "completed", "conclusion": "neutral", "output": map[string]string{"title": "Decision recorded", "summary": "Repository-defined preimage and JSON checks passed. Behavioral sandbox checks are not connected.\n\nPatch SHA-256: `" + patch + "`"}, "actions": decisionActions()}
 	var out struct {
 		ID int64 `json:"id"`
 	}
@@ -613,4 +617,106 @@ func (c *Client) CurrentComment(ctx context.Context, installation int64, repo st
 	}
 	err = c.request(ctx, token, http.MethodGet, repositoryRoute(repo)+"/issues/comments/"+strconv.FormatInt(id, 10), nil, &out)
 	return out.Body, err
+}
+
+// VerifyPRPatch proves the PR head is a direct child of the pinned base and
+// contains precisely the selected regular-file changes, without other edits.
+func (c *Client) VerifyPRPatch(ctx context.Context, installation int64, repo, baseSHA, headSHA string, files map[string][]byte) error {
+	if baseSHA == "" || headSHA == "" || len(files) == 0 {
+		return errors.New("missing PR patch inputs")
+	}
+	token, err := c.installationToken(ctx, installation, repo)
+	if err != nil {
+		return err
+	}
+	base, err := c.commit(ctx, token, repo, baseSHA)
+	if err != nil {
+		return err
+	}
+	head, err := c.commit(ctx, token, repo, headSHA)
+	if err != nil {
+		return err
+	}
+	if len(head.Parents) != 1 || head.Parents[0].SHA != baseSHA {
+		return errors.New("PR head is not based directly on the selected base")
+	}
+	type entry struct{ Path, Mode, Type, SHA string }
+	readTree := func(sha string) (map[string]entry, error) {
+		var out struct {
+			Tree      []entry `json:"tree"`
+			Truncated bool    `json:"truncated"`
+		}
+		if err := c.request(ctx, token, http.MethodGet, repositoryRoute(repo)+"/git/trees/"+url.PathEscape(sha)+"?recursive=1", nil, &out); err != nil {
+			return nil, err
+		}
+		if out.Truncated {
+			return nil, errors.New("PR tree is truncated")
+		}
+		result := map[string]entry{}
+		for _, e := range out.Tree {
+			if e.Type != "tree" {
+				if _, exists := result[e.Path]; exists {
+					return nil, errors.New("duplicate tree path")
+				}
+				result[e.Path] = e
+			}
+		}
+		return result, nil
+	}
+	before, err := readTree(base.Tree.SHA)
+	if err != nil {
+		return err
+	}
+	after, err := readTree(head.Tree.SHA)
+	if err != nil {
+		return err
+	}
+	for path, old := range before {
+		if _, changed := files[path]; changed {
+			continue
+		}
+		current, found := after[path]
+		if !found || current.Mode != old.Mode || current.Type != old.Type || current.SHA != old.SHA {
+			return fmt.Errorf("unexpected change in PR: %s", path)
+		}
+	}
+	for path, current := range after {
+		if _, changed := files[path]; changed {
+			continue
+		}
+		if _, found := before[path]; !found {
+			return fmt.Errorf("unexpected file in PR: %s", path)
+		}
+		_ = current
+	}
+	for path, expected := range files {
+		current, found := after[path]
+		if !found || current.Type != "blob" || (current.Mode != "100644" && current.Mode != "100755") {
+			return fmt.Errorf("missing or non-regular PR file: %s", path)
+		}
+		if old, found := before[path]; found && (old.Type != "blob" || old.Mode != current.Mode) {
+			return fmt.Errorf("PR file mode changed: %s", path)
+		}
+		actual, err := c.File(ctx, installation, repo, path, headSHA)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(actual, expected) {
+			return fmt.Errorf("PR file differs from selected patch: %s", path)
+		}
+	}
+	return nil
+}
+
+// UpdateDecisionCheck keeps the original check run and its requested-action buttons.
+func (c *Client) UpdateDecisionCheck(ctx context.Context, installation int64, repo string, id int64, patch string) error {
+	if id <= 0 {
+		return errors.New("invalid check ID")
+	}
+	token, err := c.installationToken(ctx, installation, repo)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{"status": "completed", "conclusion": "neutral", "actions": decisionActions(), "output": map[string]string{"title": "Decision revalidated", "summary": "Repository-defined preimage and JSON checks passed. Behavioral sandbox checks are not connected.\n\nPatch SHA-256: `" + patch + "`"}}
+	return c.request(ctx, token, http.MethodPatch, repositoryRoute(repo)+"/check-runs/"+strconv.FormatInt(id, 10), body, nil)
 }

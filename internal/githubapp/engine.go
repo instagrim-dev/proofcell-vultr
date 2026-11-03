@@ -96,6 +96,7 @@ type Job struct {
 	Event         Event
 	Status, Error string
 	Attempts      int
+	ReportIssue   int
 }
 type disk struct {
 	Plans map[string]*Plan
@@ -309,28 +310,36 @@ func (e *Engine) drain(ctx context.Context) {
 		if json.Unmarshal(data, &j) != nil {
 			continue
 		}
-		if j.Status == "done" || j.Attempts >= 3 {
+		if j.Status == "done" || (j.Attempts >= 3 && j.Status != "reporting") {
 			continue
 		}
-		j.Attempts++
-		call, cancel := context.WithTimeout(ctx, 90*time.Second)
-		err = e.process(call, j.Event)
-		cancel()
-		if err != nil {
-			j.Status = "failed"
-			j.Error = err.Error()
-			if j.Attempts == 3 {
-				issue := j.Event.Issue.Number
-				if j.Event.Kind == "check_run" {
-					issue = e.checkIssue(j.Event)
+		if j.Status != "reporting" {
+			j.Attempts++
+			call, cancel := context.WithTimeout(ctx, 90*time.Second)
+			err = e.process(call, j.Event)
+			cancel()
+			if err != nil {
+				j.Status, j.Error = "failed", err.Error()
+				if j.Attempts == 3 {
+					j.ReportIssue = j.Event.Issue.Number
+					if j.Event.Kind == "check_run" {
+						j.ReportIssue = e.checkIssue(j.Event)
+					}
+					if j.ReportIssue > 0 {
+						j.Status = "reporting"
+					}
 				}
-				if issue > 0 {
-					_ = e.api.Comment(ctx, j.Event.Installation.ID, j.Event.Repository.FullName, issue, "Trajectory could not complete this action: "+j.Error+". Correct the inputs or restore service, then try again.")
-				}
+			} else {
+				j.Status, j.Error = "done", ""
 			}
-		} else {
-			j.Status = "done"
-			j.Error = ""
+		}
+		if j.Status == "reporting" {
+			call, cancel := context.WithTimeout(ctx, 30*time.Second)
+			err = e.api.Comment(call, j.Event.Installation.ID, j.Event.Repository.FullName, j.ReportIssue, "Trajectory could not complete this action: "+j.Error+". Correct the inputs or restore service, then try again.")
+			cancel()
+			if err == nil {
+				j.Status = "failed"
+			}
 		}
 		payload, _ := json.Marshal(j)
 		if os.WriteFile(file+".tmp", payload, 0600) != nil {

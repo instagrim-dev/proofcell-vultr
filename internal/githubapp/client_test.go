@@ -510,3 +510,88 @@ func TestCurrentCommentReadsGitHubBody(t *testing.T) {
 		t.Fatalf("body %q: %v", body, err)
 	}
 }
+
+func TestVerifyPRPatchRejectsUnrelatedOrWrongChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name                                  string
+		extra, wrong, parent, truncated, mode bool
+		wantErr                               bool
+	}{{name: "matching"}, {name: "extra change", extra: true, wantErr: true}, {name: "wrong content", wrong: true, wantErr: true}, {name: "different parent", parent: true, wantErr: true}, {name: "truncated tree", truncated: true, wantErr: true}, {name: "mode changed", mode: true, wantErr: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/app/installations/7/access_tokens":
+					fmt.Fprint(w, `{"token":"install"}`)
+				case "/repos/acme/project/git/commits/base":
+					fmt.Fprint(w, `{"tree":{"sha":"base-tree"}}`)
+				case "/repos/acme/project/git/commits/head":
+					parent := "base"
+					if tc.parent {
+						parent = "other"
+					}
+					fmt.Fprintf(w, `{"tree":{"sha":"head-tree"},"parents":[{"sha":%q}]}`, parent)
+				case "/repos/acme/project/git/trees/base-tree":
+					fmt.Fprint(w, `{"tree":[{"path":"a.txt","type":"blob","mode":"100644","sha":"old"},{"path":"keep.txt","type":"blob","mode":"100644","sha":"keep"}]}`)
+				case "/repos/acme/project/git/trees/head-tree":
+					keep := "keep"
+					if tc.extra {
+						keep = "changed"
+					}
+					mode := "100644"
+					if tc.mode {
+						mode = "100755"
+					}
+					fmt.Fprintf(w, `{"truncated":%t,"tree":[{"path":"a.txt","type":"blob","mode":%q,"sha":"new"},{"path":"keep.txt","type":"blob","mode":"100644","sha":%q}]}`, tc.truncated, mode, keep)
+				case "/repos/acme/project/contents/a.txt":
+					if r.URL.Query().Get("ref") != "head" {
+						t.Error("wrong ref")
+					}
+					content := "bmV3"
+					if tc.wrong {
+						content = "YmFk"
+					}
+					fmt.Fprintf(w, `{"type":"file","encoding":"base64","content":%q}`, content)
+				default:
+					t.Errorf("unexpected %s", r.URL.String())
+					http.NotFound(w, r)
+				}
+			})
+			err := c.VerifyPRPatch(context.Background(), 7, "acme/project", "base", "head", map[string][]byte{"a.txt": []byte("new")})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("VerifyPRPatch returned %v", err)
+			}
+		})
+	}
+}
+func TestUpdateDecisionCheckPreservesActions(t *testing.T) {
+	c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/app/installations/7/access_tokens":
+			fmt.Fprint(w, `{"token":"install"}`)
+		case "/repos/acme/project/check-runs/88":
+			var input struct {
+				Actions []struct {
+					Identifier string `json:"identifier"`
+				} `json:"actions"`
+			}
+			if r.Method != "PATCH" {
+				t.Error("not PATCH")
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			if len(input.Actions) != 2 || input.Actions[0].Identifier != "revalidate" || input.Actions[1].Identifier != "show_decision" {
+				t.Error("requested actions not preserved")
+			}
+			fmt.Fprint(w, `{"id":88}`)
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	if err := c.UpdateDecisionCheck(context.Background(), 7, "acme/project", 88, "patch"); err != nil {
+		t.Fatal(err)
+	}
+}

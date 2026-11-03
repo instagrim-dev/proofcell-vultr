@@ -14,6 +14,8 @@ type nativeAPI interface {
 	ControlComment(context.Context, int64, string, int, string) (int64, error)
 	PRHead(context.Context, int64, string, string) (string, error)
 	CreateDecisionCheck(context.Context, int64, string, string, string) (int64, error)
+	UpdateDecisionCheck(context.Context, int64, string, int64, string) error
+	VerifyPRPatch(context.Context, int64, string, string, string, map[string][]byte) error
 }
 
 func (e *Engine) ensureCheck(ctx context.Context, inst int64, repo string, p *Plan) error {
@@ -23,6 +25,9 @@ func (e *Engine) ensureCheck(ctx context.Context, inst int64, repo string, p *Pl
 	}
 	head, err := api.PRHead(ctx, inst, repo, p.PR)
 	if err != nil {
+		return err
+	}
+	if err := api.VerifyPRPatch(ctx, inst, repo, p.BaseSHA, head, p.Files); err != nil {
 		return err
 	}
 	id, err := api.CreateDecisionCheck(ctx, inst, repo, head, p.PatchHash)
@@ -129,15 +134,10 @@ func (e *Engine) processCheck(ctx context.Context, ev Event) error {
 				return fmt.Errorf("declared JSON check failed")
 			}
 		}
-		id, err := api.CreateDecisionCheck(ctx, inst, repo, head, p.PatchHash)
-		if err != nil {
+		if err := api.VerifyPRPatch(ctx, inst, repo, p.BaseSHA, head, p.Files); err != nil {
 			return err
 		}
-		if id <= 0 {
-			return fmt.Errorf("invalid check ID")
-		}
-		p.CheckID = id
-		return e.save()
+		return api.UpdateDecisionCheck(ctx, inst, repo, p.CheckID, p.PatchHash)
 	default:
 		return nil
 	}

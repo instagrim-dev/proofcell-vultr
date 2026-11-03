@@ -1,6 +1,7 @@
 package githubapp
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -14,9 +15,31 @@ import (
 
 type nativeFake struct {
 	*fakeAPI
-	next   int64
-	checks int
-	head   string
+	next      int64
+	checks    int
+	head      string
+	headFiles map[string][]byte
+	updates   int
+}
+
+func (f *nativeFake) Publish(ctx context.Context, i int64, repo, base, sha, branch, title, body string, files map[string][]byte) (string, error) {
+	f.headFiles = files
+	return f.fakeAPI.Publish(ctx, i, repo, base, sha, branch, title, body, files)
+}
+func (f *nativeFake) VerifyPRPatch(_ context.Context, _ int64, _, _, _ string, files map[string][]byte) error {
+	if len(f.headFiles) != len(files) {
+		return fmt.Errorf("PR tree differs")
+	}
+	for path, content := range files {
+		if !bytes.Equal(f.headFiles[path], content) {
+			return fmt.Errorf("PR content differs")
+		}
+	}
+	return nil
+}
+func (f *nativeFake) UpdateDecisionCheck(context.Context, int64, string, int64, string) error {
+	f.updates++
+	return nil
 }
 
 func (f *nativeFake) ControlComment(_ context.Context, _ int64, _ string, _ int, body string) (int64, error) {
@@ -146,7 +169,7 @@ func TestNativeRevalidateAndChangedHead(t *testing.T) {
 	if err := e.process(ctx, action); err != nil {
 		t.Fatal(err)
 	}
-	if f.checks != 2 {
+	if f.checks != 1 || f.updates != 1 {
 		t.Fatal("validation did not run")
 	}
 	f.head = "different"
@@ -430,5 +453,99 @@ func TestDecisionChangedDuringPublicationBlocksWrite(t *testing.T) {
 	}
 	if f.publications != 0 {
 		t.Fatal("publication occurred")
+	}
+}
+
+func TestCheckRefusesUnverifiedPRHead(t *testing.T) {
+	f := &nativeFake{fakeAPI: &fakeAPI{title: "cancel", base: "abc", allowed: true}, head: "tampered", headFiles: map[string][]byte{"policy.json": []byte(`{"access":"wrong"}`)}}
+	e, _ := Open(t.TempDir(), f)
+	p := &Plan{PR: "https://github.com/a/b/pull/1", BaseSHA: "abc", Files: map[string][]byte{"policy.json": []byte(`{"access":"paid"}`)}, PatchHash: "patch"}
+	if err := e.ensureCheck(context.Background(), 1, "a/b", p); err == nil {
+		t.Fatal("unverified PR head received a passing receipt")
+	}
+	if f.checks != 0 {
+		t.Fatal("created check before verifying PR")
+	}
+}
+func TestRevalidateKeepsExistingCheckButtons(t *testing.T) {
+	ctx := context.Background()
+	f := &nativeFake{fakeAPI: &fakeAPI{title: "cancel", base: "abc", allowed: true}, head: "head"}
+	e, _ := Open(t.TempDir(), f)
+	start := event("")
+	start.Kind = "issues"
+	if err := e.process(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	p := e.data.Plans["1/a/b/2"]
+	click := event("")
+	click.Kind = "issue_comment"
+	click.Action = "edited"
+	click.Comment.ID = p.DecisionComment
+	click.Comment.Body = strings.Replace(p.DecisionBody, "[ ]", "[x]", 1)
+	if err := e.process(ctx, click); err != nil {
+		t.Fatal(err)
+	}
+	click.Comment.ID = p.PublishComment
+	click.Comment.Body = strings.Replace(p.PublishBody, "[ ]", "[x]", 1)
+	if err := e.process(ctx, click); err != nil {
+		t.Fatal(err)
+	}
+	original := p.CheckID
+	action := event("")
+	action.Kind = "check_run"
+	action.CheckRun.ID = original
+	action.CheckRun.HeadSHA = p.CheckHead
+	action.RequestedAction.Identifier = "revalidate"
+	if err := e.process(ctx, action); err != nil {
+		t.Fatal(err)
+	}
+	if f.checks != 1 || f.updates != 1 || p.CheckID != original {
+		t.Fatalf("revalidate replaced check: created %d updated %d id %d", f.checks, f.updates, p.CheckID)
+	}
+	action.RequestedAction.Identifier = "show_decision"
+	if err := e.process(ctx, action); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.comments[len(f.comments)-1], "Decision receipt") {
+		t.Fatal("original check button stopped working")
+	}
+}
+
+type flakyReportNative struct {
+	*reportingNative
+	reportAttempts int
+}
+
+func (f *flakyReportNative) Comment(ctx context.Context, i int64, r string, n int, b string) error {
+	f.reportAttempts++
+	if f.reportAttempts == 1 {
+		return fmt.Errorf("temporary comment outage")
+	}
+	return f.reportingNative.Comment(ctx, i, r, n, b)
+}
+func TestFailedCheckReportIsRetriedAfterCommentOutage(t *testing.T) {
+	f := &flakyReportNative{reportingNative: &reportingNative{statefulNative: &statefulNative{nativeFake: &nativeFake{fakeAPI: &fakeAPI{allowed: true}, head: "changed"}, bodies: map[int64]string{}}}}
+	e, _ := Open(t.TempDir(), f)
+	e.data.Plans["1/a/b/2"] = &Plan{PR: "https://github.com/a/b/pull/1", CheckID: 77, CheckHead: "original"}
+	ev := event("")
+	ev.Action = "requested_action"
+	ev.Issue.Number = 0
+	ev.CheckRun.ID = 77
+	ev.CheckRun.HeadSHA = "original"
+	ev.RequestedAction.Identifier = "revalidate"
+	b, _ := json.Marshal(ev)
+	mac := hmac.New(sha256.New, []byte("secret"))
+	mac.Write(b)
+	req := httptest.NewRequest("POST", "/webhook", strings.NewReader(string(b)))
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	req.Header.Set("X-GitHub-Event", "check_run")
+	req.Header.Set("X-GitHub-Delivery", "failure-with-outage")
+	w := httptest.NewRecorder()
+	e.Handler("secret").ServeHTTP(w, req)
+	for i := 0; i < 4; i++ {
+		e.drain(context.Background())
+	}
+	if f.reportAttempts != 2 || len(f.issueNumbers) != 1 || f.issueNumbers[0] != 2 {
+		t.Fatalf("failure report was not retried: attempts=%d issues=%v", f.reportAttempts, f.issueNumbers)
 	}
 }
