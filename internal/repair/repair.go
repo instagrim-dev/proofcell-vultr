@@ -53,7 +53,7 @@ func (s *Service) Repair(ctx context.Context, choice string, previous []byte) (R
 		intent = "return true strictly before the paid-until boundary, and false at or after it"
 	}
 	prompt := fmt.Sprintf("Owner decision: %s. Generate exactly one Go function: func HasAccess(paidUntil, now int64) bool. Use only the two input values and boolean/comparison expressions. Return only the function, no imports, no markdown. Existing code:\n%s", intent, string(previous))
-	data, _ := json.Marshal(map[string]any{"model": s.Model, "messages": []map[string]string{{"role": "system", "content": "You are a Go programmer. Output only the requested Go function."}, {"role": "user", "content": prompt}}, "temperature": 0, "max_tokens": 2048})
+	data, _ := json.Marshal(map[string]any{"model": s.Model, "messages": []map[string]string{{"role": "system", "content": "You are a Go programmer. Output only the requested Go function."}, {"role": "user", "content": prompt}}, "temperature": 0, "max_tokens": 2048, "chat_template_kwargs": map[string]any{"enable_thinking": false}})
 	req, err := http.NewRequestWithContext(ctx, "POST", s.Endpoint, bytes.NewReader(data))
 	if err != nil {
 		return Result{}, err

@@ -32,6 +32,9 @@ func TestRepairUsesModelCandidateAndIndependentSandbox(t *testing.T) {
 		}
 		var req map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		if mode, ok := req["chat_template_kwargs"].(map[string]any); !ok || mode["enable_thinking"] != false {
+			t.Error("bounded generation must disable model reasoning")
+		}
 		if req["max_tokens"].(float64) < 2048 {
 			t.Error("reasoning model needs enough output budget to return a candidate")
 		}
