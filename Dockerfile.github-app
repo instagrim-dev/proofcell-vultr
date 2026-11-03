@@ -3,6 +3,7 @@ WORKDIR /src
 COPY go.mod ./
 COPY cmd/trajectory-app ./cmd/trajectory-app
 COPY internal/githubapp ./internal/githubapp
+COPY internal/repair ./internal/repair
 RUN mkdir -m 700 /state
 RUN CGO_ENABLED=0 go build -trimpath -o /trajectory-app ./cmd/trajectory-app
 FROM gcr.io/distroless/static-debian12:nonroot

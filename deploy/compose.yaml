@@ -9,8 +9,22 @@ services:
       TRAJECTORY_ADDR: 0.0.0.0:8080
       TRAJECTORY_STATE_DIR: /data
       TRAJECTORY_SETUP_TOKEN: ${TRAJECTORY_SETUP_TOKEN:?Set TRAJECTORY_SETUP_TOKEN}
+      TRAJECTORY_REPAIR_SOCKET: /repair/worker.sock
     volumes:
       - app-state:/data
+      - /run/trajectory-repair:/repair:ro
+    depends_on:
+      - repair
+  repair:
+    build:
+      context: ..
+      dockerfile: Dockerfile.repair
+    restart: unless-stopped
+    volumes:
+      - /run/trajectory-repair:/repair
+      - /var/lib/trajectory-repair/work:/work
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.config/trajectory/inference-key:/run/secrets/vultr-inference-key:ro
   proxy:
     image: caddy:2
     restart: unless-stopped

@@ -13,9 +13,17 @@ import (
 type nativeAPI interface {
 	ControlComment(context.Context, int64, string, int, string) (int64, error)
 	PRHead(context.Context, int64, string, string) (string, error)
-	CreateDecisionCheck(context.Context, int64, string, string, string) (int64, error)
-	UpdateDecisionCheck(context.Context, int64, string, int64, string) error
+	CreateDecisionCheck(context.Context, int64, string, string, string, string) (int64, error)
+	UpdateDecisionCheck(context.Context, int64, string, int64, string, string) error
 	VerifyPRPatch(context.Context, int64, string, string, string, map[string][]byte) error
+}
+
+func checkSummary(p *Plan) string {
+	base := "Repository-defined preimage and JSON checks passed."
+	if p.Generated == nil {
+		return base + " Behavioral sandbox checks are not connected."
+	}
+	return fmt.Sprintf("%s Sandbox boundary tests passed for candidate SHA-256 `%s`; test SHA-256 `%s`. Vultr model `%s`, response `%s`. Host canary preserved and container removed. Revalidate rechecks inputs and PR tree; it does not rerun sandbox tests.", base, p.Generated.SourceSHA256, p.Generated.Evidence.TestsSHA256, p.Generated.Model, p.Generated.RequestID)
 }
 
 func (e *Engine) ensureCheck(ctx context.Context, inst int64, repo string, p *Plan) error {
@@ -30,7 +38,7 @@ func (e *Engine) ensureCheck(ctx context.Context, inst int64, repo string, p *Pl
 	if err := api.VerifyPRPatch(ctx, inst, repo, p.BaseSHA, head, p.Files); err != nil {
 		return err
 	}
-	id, err := api.CreateDecisionCheck(ctx, inst, repo, head, p.PatchHash)
+	id, err := api.CreateDecisionCheck(ctx, inst, repo, head, p.PatchHash, checkSummary(p))
 	if err != nil {
 		return err
 	}
@@ -118,7 +126,11 @@ func (e *Engine) processCheck(ctx context.Context, ev Event) error {
 			if err != nil {
 				return err
 			}
-			if hash(old) != change.Before || string(p.Files[change.Path]) != change.Content {
+			contentMatches := string(p.Files[change.Path]) == change.Content
+			if change.Path == "access.go" && p.Generated != nil {
+				contentMatches = hash(p.Files[change.Path]) == p.Generated.SourceSHA256 && string(p.Files[change.Path]) == string(p.Generated.Source)
+			}
+			if hash(old) != change.Before || !contentMatches {
 				return fmt.Errorf("patch preimage or content changed")
 			}
 		}
@@ -137,7 +149,7 @@ func (e *Engine) processCheck(ctx context.Context, ev Event) error {
 		if err := api.VerifyPRPatch(ctx, inst, repo, p.BaseSHA, head, p.Files); err != nil {
 			return err
 		}
-		return api.UpdateDecisionCheck(ctx, inst, repo, p.CheckID, p.PatchHash)
+		return api.UpdateDecisionCheck(ctx, inst, repo, p.CheckID, p.PatchHash, checkSummary(p))
 	default:
 		return nil
 	}

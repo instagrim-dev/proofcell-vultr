@@ -584,12 +584,12 @@ func decisionActions() []map[string]string {
 	return []map[string]string{{"label": "Revalidate", "description": "Recheck inputs and JSON assertions", "identifier": "revalidate"}, {"label": "Post decision", "description": "Post the decision receipt to the issue", "identifier": "show_decision"}}
 }
 
-func (c *Client) CreateDecisionCheck(ctx context.Context, installation int64, repo, head, patch string) (int64, error) {
+func (c *Client) CreateDecisionCheck(ctx context.Context, installation int64, repo, head, patch, summary string) (int64, error) {
 	token, err := c.installationToken(ctx, installation, repo)
 	if err != nil {
 		return 0, err
 	}
-	body := map[string]any{"name": "Trajectory decision", "head_sha": head, "status": "completed", "conclusion": "neutral", "output": map[string]string{"title": "Decision recorded", "summary": "Repository-defined preimage and JSON checks passed. Behavioral sandbox checks are not connected.\n\nPatch SHA-256: `" + patch + "`"}, "actions": decisionActions()}
+	body := map[string]any{"name": "Trajectory decision", "head_sha": head, "status": "completed", "conclusion": "neutral", "output": map[string]string{"title": "Decision recorded", "summary": summary + "\n\nPatch SHA-256: `" + patch + "`"}, "actions": decisionActions()}
 	var out struct {
 		ID int64 `json:"id"`
 	}
@@ -709,7 +709,7 @@ func (c *Client) VerifyPRPatch(ctx context.Context, installation int64, repo, ba
 }
 
 // UpdateDecisionCheck keeps the original check run and its requested-action buttons.
-func (c *Client) UpdateDecisionCheck(ctx context.Context, installation int64, repo string, id int64, patch string) error {
+func (c *Client) UpdateDecisionCheck(ctx context.Context, installation int64, repo string, id int64, patch, summary string) error {
 	if id <= 0 {
 		return errors.New("invalid check ID")
 	}
@@ -717,6 +717,6 @@ func (c *Client) UpdateDecisionCheck(ctx context.Context, installation int64, re
 	if err != nil {
 		return err
 	}
-	body := map[string]any{"status": "completed", "conclusion": "neutral", "actions": decisionActions(), "output": map[string]string{"title": "Decision revalidated", "summary": "Repository-defined preimage and JSON checks passed. Behavioral sandbox checks are not connected.\n\nPatch SHA-256: `" + patch + "`"}}
+	body := map[string]any{"status": "completed", "conclusion": "neutral", "actions": decisionActions(), "output": map[string]string{"title": "Decision revalidated", "summary": summary + "\n\nPatch SHA-256: `" + patch + "`"}}
 	return c.request(ctx, token, http.MethodPatch, repositoryRoute(repo)+"/check-runs/"+strconv.FormatInt(id, 10), body, nil)
 }

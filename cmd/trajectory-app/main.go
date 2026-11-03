@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/instagrim-dev/proofcell-vultr/internal/githubapp"
+	"github.com/instagrim-dev/proofcell-vultr/internal/repair"
 )
 
 func main() {
@@ -74,6 +75,9 @@ func run() error {
 		engine, err := githubapp.Open(stateDir, client)
 		if err != nil {
 			return fmt.Errorf("open Trajectory state: %w", err)
+		}
+		if socket := os.Getenv("TRAJECTORY_REPAIR_SOCKET"); socket != "" {
+			engine.Repairer = repair.Client{Socket: socket}
 		}
 		mux.Handle("/webhook", engine.Handler(credentials.WebhookSecret))
 		go engine.Start(ctx)

@@ -2,7 +2,7 @@
 
 Trajectory presents repository-authored implementation choices on an issue, applies the selected file replacements, checks JSON values, and publishes a branch and draft pull request on request. It does not merge pull requests.
 
-This version runs bounded transformations authored in the repository's `.trajectory.json`. It does not execute arbitrary model output, repository scripts, or application code. Its checks compare top-level JSON object values; a passing receipt establishes those comparisons, not application behavior.
+Repositories can opt into `vultr-go-access-v1` in `.trajectory.json` for the subscription example. Vultr generates a bounded Go function for the selected policy; a separate container runs fixed boundary tests before the exact candidate is offered for approval. Other configured replacements remain repository-authored. The worker does not execute repository scripts or arbitrary programs. JSON checks compare top-level object values; sandbox test results describe their stated boundary cases.
 
 ## Run the service
 
@@ -75,7 +75,7 @@ Commit all three files to the default branch. The config includes SHA-256 preima
 
 Open an issue asking how cancellation should affect access and add the `trajectory` label as a repository writer. The app posts a decision comment. Select exactly one checkbox; to change a choice before publishing, clear the previous checkbox first. Multiple selections invalidate the preview and the app asks you to clear the extra checkbox. The app checks the current comment before acting on an edit and binds approval to the patch shown in its preview.
 
-`keep` changes `HasAccess` in `access.go` to return `now < paidUntil`, allowing access before the paid-through boundary. `end` makes `HasAccess` return `false`, revoking access immediately. Both also replace `subscription.json` with the corresponding cancellation state. The app checks the declared JSON values and file preimages; it does not execute the Go code or claim those comparisons prove the behavior.
+`keep` changes `HasAccess` in `access.go` to return `now < paidUntil`, allowing access before the paid-through boundary. `end` makes `HasAccess` return `false`, revoking access immediately. Both also replace `subscription.json` with the corresponding cancellation state. The App checks the declared JSON values and file preimages. In the opt-in example, it also runs the generated Go function against separate boundary tests in the sandbox, and records the model response, candidate hash, and test hash.
 
 Review the resulting diff and select **Open draft pull request** in the preview comment. The app creates a branch and a draft PR. Before creating the PR check, the app reads the PR head and verifies that its complete tree contains only the selected patch on the pinned base. The PR's **Checks** tab shows a neutral **Trajectory decision** check with two actions: **Revalidate** checks the pinned inputs, PR tree, preimages and declared JSON assertions again and updates the same check; **Post decision** posts the decision receipt on the issue. Both require repository write access. If an action cannot complete after retries, the app reports the reason on the associated issue, retrying the notification if GitHub is temporarily unavailable. If the issue, base, or PR head changes, start a fresh decision instead of relying on the old result. Publishing does not merge the PR.
 
@@ -115,3 +115,5 @@ The config has this shape:
 Use repository-relative file paths and SHA-256 digests of the existing file bytes. `content` is the full replacement, not a diff. Each `key` names a literal top-level key of a JSON object, and `equals` is its expected JSON value. For example, `enabled` compares a boolean; a dotted key does not traverse nested fields.
 
 Changes cannot target `.git`, `.github`, or `.trajectory.json`. A choice cannot alter its own config or GitHub workflow files. Keep alternatives understandable from their title and resulting diff, and give each outcome checks that distinguish it from the other options.
+
+The optional `"generation": "vultr-go-access-v1"` field enables the bounded subscription example and requires the deployed Vultr repair worker. It replaces only `access.go` with a model-generated function after the worker’s independent checks pass. Omit it for repository-authored alternatives.

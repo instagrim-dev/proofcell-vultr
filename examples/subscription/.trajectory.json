@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "generation": "vultr-go-access-v1",
   "question": "When this subscription is cancelled, should access remain through the paid period or end immediately?",
   "choices": [
     {

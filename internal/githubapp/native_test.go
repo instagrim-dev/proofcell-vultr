@@ -37,7 +37,7 @@ func (f *nativeFake) VerifyPRPatch(_ context.Context, _ int64, _, _, _ string, f
 	}
 	return nil
 }
-func (f *nativeFake) UpdateDecisionCheck(context.Context, int64, string, int64, string) error {
+func (f *nativeFake) UpdateDecisionCheck(context.Context, int64, string, int64, string, string) error {
 	f.updates++
 	return nil
 }
@@ -50,7 +50,7 @@ func (f *nativeFake) ControlComment(_ context.Context, _ int64, _ string, _ int,
 func (f *nativeFake) PRHead(context.Context, int64, string, string) (string, error) {
 	return f.head, nil
 }
-func (f *nativeFake) CreateDecisionCheck(context.Context, int64, string, string, string) (int64, error) {
+func (f *nativeFake) CreateDecisionCheck(context.Context, int64, string, string, string, string) (int64, error) {
 	f.checks++
 	return 77, nil
 }

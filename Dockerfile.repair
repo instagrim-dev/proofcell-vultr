@@ -1,0 +1,9 @@
+FROM golang:1.24-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+COPY internal/repair ./internal/repair
+COPY cmd/trajectory-repair ./cmd/trajectory-repair
+RUN CGO_ENABLED=0 go build -trimpath -o /trajectory-repair ./cmd/trajectory-repair
+FROM docker:29-cli
+COPY --from=build /trajectory-repair /trajectory-repair
+ENTRYPOINT ["/trajectory-repair"]

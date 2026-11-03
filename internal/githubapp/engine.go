@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/instagrim-dev/proofcell-vultr/internal/repair"
 )
 
 type API interface {
@@ -44,11 +46,13 @@ type Choice struct {
 	Checks  []Check  `json:"checks"`
 }
 type Config struct {
-	Version  int      `json:"version"`
-	Question string   `json:"question"`
-	Choices  []Choice `json:"choices"`
+	Generation string   `json:"generation,omitempty"`
+	Version    int      `json:"version"`
+	Question   string   `json:"question"`
+	Choices    []Choice `json:"choices"`
 }
 type Plan struct {
+	Generated                                                         *repair.Result
 	DecisionComment, PublishComment, CheckID                          int64
 	DecisionBody, PublishBody, PublishPatch, CheckHead                string
 	Pending                                                           bool
@@ -102,12 +106,16 @@ type disk struct {
 	Plans map[string]*Plan
 	Jobs  map[string]*Job
 }
+type Repairer interface {
+	Repair(context.Context, string, []byte) (repair.Result, error)
+}
 type Engine struct {
-	mu   sync.Mutex
-	dir  string
-	api  API
-	data disk
-	wake chan struct{}
+	Repairer Repairer
+	mu       sync.Mutex
+	dir      string
+	api      API
+	data     disk
+	wake     chan struct{}
 }
 
 func hash(b []byte) string { v := sha256.Sum256(b); return hex.EncodeToString(v[:]) }
@@ -315,7 +323,7 @@ func (e *Engine) drain(ctx context.Context) {
 		}
 		if j.Status != "reporting" {
 			j.Attempts++
-			call, cancel := context.WithTimeout(ctx, 90*time.Second)
+			call, cancel := context.WithTimeout(ctx, 240*time.Second)
 			err = e.process(call, j.Event)
 			cancel()
 			if err != nil {
@@ -485,6 +493,9 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		if err = json.Unmarshal(b, &cfg); err != nil {
 			return err
 		}
+		if cfg.Generation != "" && cfg.Generation != "vultr-go-access-v1" {
+			return fmt.Errorf("unsupported generation mode")
+		}
 		if cfg.Version != 1 || cfg.Question == "" || len(cfg.Choices) < 2 || len(cfg.Choices) > 8 {
 			return fmt.Errorf("expected version 1, question, and 2–8 choices")
 		}
@@ -563,6 +574,7 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 			return fmt.Errorf("unknown choice")
 		}
 		files := map[string][]byte{}
+		var generated *repair.Result
 		diff := ""
 		for _, c := range selected.Changes {
 			if !validPath(c.Path) || len(c.Content) > 64<<10 || files[c.Path] != nil {
@@ -575,10 +587,25 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 			if hash(old) != c.Before {
 				return fmt.Errorf("preimage mismatch: %s", c.Path)
 			}
-			files[c.Path] = []byte(c.Content)
+			content := []byte(c.Content)
+			if p.Config.Generation == "vultr-go-access-v1" && c.Path == "access.go" {
+				if e.Repairer == nil {
+					return fmt.Errorf("Vultr generation worker not configured")
+				}
+				result, err := e.Repairer.Repair(ctx, selected.ID, old)
+				if err != nil {
+					return err
+				}
+				if hash(result.Source) != result.SourceSHA256 || !result.Evidence.CanaryPreserved || !result.Evidence.CleanupConfirmed || result.RequestID == "" {
+					return fmt.Errorf("invalid generated candidate receipt")
+				}
+				generated = &result
+				content = result.Source
+			}
+			files[c.Path] = content
 			diff += "--- a/" + c.Path + "\n+++ b/" + c.Path + "\n"
 			a := strings.Split(strings.TrimSuffix(string(old), "\n"), "\n")
-			b := strings.Split(strings.TrimSuffix(c.Content, "\n"), "\n")
+			b := strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
 			diff += fmt.Sprintf("@@ -1,%d +1,%d @@\n", len(a), len(b))
 			for _, l := range a {
 				diff += "-" + l + "\n"
@@ -586,6 +613,9 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 			for _, l := range b {
 				diff += "+" + l + "\n"
 			}
+		}
+		if p.Config.Generation != "" && generated == nil {
+			return fmt.Errorf("generation requires an access.go change")
 		}
 		if len(diff) > 24000 {
 			return fmt.Errorf("diff too large for issue review")
@@ -616,12 +646,20 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		p.Choice = selected.ID
 		p.PatchHash = hash(encoded)
 		p.Files = files
+		p.Generated = generated
 		p.Diff = diff
 		p.PR = ""
 		if err = e.save(); err != nil {
 			return err
 		}
-		msg := fmt.Sprintf("### Selected `%s` · plan `%s`\n\n```diff\n%s```\n\n%d repository-defined JSON checks passed. Behavioral sandbox checks: not connected.\n\nPatch `%s`\n\n- [ ] Open draft pull request", p.Choice, p.ID, diff, len(selected.Checks), p.PatchHash)
+		verification := "Behavioral sandbox checks: not connected."
+		if p.Generated != nil {
+			verification = fmt.Sprintf("Sandbox boundary tests passed. Vultr model `%s`, response `%s`, candidate SHA-256 `%s`, tests SHA-256 `%s`. Host canary preserved; container removed.", p.Generated.Model, p.Generated.RequestID, p.Generated.SourceSHA256, p.Generated.Evidence.TestsSHA256)
+		}
+		if p.Generated != nil {
+			verification += "\n\n<details><summary>Sandbox test output</summary>\n\n```text\n" + strings.ReplaceAll(p.Generated.Evidence.Output, "```", "'&#96;'&#96;'&#96;") + "\n```\n</details>"
+		}
+		msg := fmt.Sprintf("### Selected `%s` · plan `%s`\n\n```diff\n%s```\n\n%d repository-defined JSON checks passed. %s\n\nPatch `%s`\n\n- [ ] Open draft pull request", p.Choice, p.ID, diff, len(selected.Checks), verification, p.PatchHash)
 		if api, ok := e.api.(nativeAPI); ok {
 			comment, err := api.ControlComment(ctx, inst, repo, n, msg)
 			if err != nil {
@@ -690,7 +728,7 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		return err
 	}
 	ctx = WithPublicationGuard(ctx, guard)
-	pr, err := e.api.Publish(ctx, inst, repo, p.BaseBranch, p.BaseSHA, appBranch, "Trajectory: "+title, fmt.Sprintf("Resolves #%d\n\nOwner: @%s\nDecision: %s\nPlan: %s\nBase: %s\nPatch SHA-256: %s\n\nRepository-defined preimage and JSON checks passed. Behavioral sandbox checks are not connected.\n", n, ev.Sender.Login, p.Choice, p.ID, p.BaseSHA, p.PatchHash), p.Files)
+	pr, err := e.api.Publish(ctx, inst, repo, p.BaseBranch, p.BaseSHA, appBranch, "Trajectory: "+title, fmt.Sprintf("Resolves #%d\n\nOwner: @%s\nDecision: %s\nPlan: %s\nBase: %s\nPatch SHA-256: %s\n\n%s\n", n, ev.Sender.Login, p.Choice, p.ID, p.BaseSHA, p.PatchHash, checkSummary(p)), p.Files)
 	if err != nil {
 		return err
 	}

@@ -483,7 +483,7 @@ func TestNativeCheckPayloadAndHead(t *testing.T) {
 	if _, err := c.PRHead(ctx, 7, "acme/project", "https://evil.example/pull/9"); err == nil {
 		t.Fatal("accepted foreign PR URL")
 	}
-	id, err := c.CreateDecisionCheck(ctx, 7, "acme/project", head, "patch")
+	id, err := c.CreateDecisionCheck(ctx, 7, "acme/project", head, "patch", "summary")
 	if err != nil || id != 88 {
 		t.Fatalf("check %d: %v", id, err)
 	}
@@ -591,7 +591,7 @@ func TestUpdateDecisionCheckPreservesActions(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	})
-	if err := c.UpdateDecisionCheck(context.Background(), 7, "acme/project", 88, "patch"); err != nil {
+	if err := c.UpdateDecisionCheck(context.Background(), 7, "acme/project", 88, "patch", "summary"); err != nil {
 		t.Fatal(err)
 	}
 }
