@@ -454,11 +454,17 @@ func TestNativeCheckPayloadAndHead(t *testing.T) {
 				Status     string `json:"status"`
 				Conclusion string `json:"conclusion"`
 				Actions    []struct {
-					Identifier string `json:"identifier"`
+					Identifier  string `json:"identifier"`
+					Description string `json:"description"`
 				} `json:"actions"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				t.Fatal(err)
+			}
+			for _, action := range input.Actions {
+				if len(action.Description) > 40 {
+					t.Errorf("action description exceeds GitHub limit: %d", len(action.Description))
+				}
 			}
 			if input.Head != "abc123" || input.Status != "completed" || input.Conclusion != "neutral" || len(input.Actions) != 2 || input.Actions[0].Identifier != "revalidate" || input.Actions[1].Identifier != "show_decision" {
 				t.Errorf("invalid check request: %+v", input)
@@ -480,5 +486,27 @@ func TestNativeCheckPayloadAndHead(t *testing.T) {
 	id, err := c.CreateDecisionCheck(ctx, 7, "acme/project", head, "patch")
 	if err != nil || id != 88 {
 		t.Fatalf("check %d: %v", id, err)
+	}
+}
+
+func TestCurrentCommentReadsGitHubBody(t *testing.T) {
+	c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/app/installations/7/access_tokens":
+			fmt.Fprint(w, `{"token":"install"}`)
+		case "/repos/acme/project/issues/comments/42":
+			if r.Method != "GET" {
+				t.Errorf("wrong method: %s", r.Method)
+			}
+			fmt.Fprint(w, `{"body":"- [x] Keep"}`)
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	body, err := c.CurrentComment(context.Background(), 7, "acme/project", 42)
+	if err != nil || body != "- [x] Keep" {
+		t.Fatalf("body %q: %v", body, err)
 	}
 }

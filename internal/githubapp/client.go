@@ -585,7 +585,7 @@ func (c *Client) CreateDecisionCheck(ctx context.Context, installation int64, re
 	if err != nil {
 		return 0, err
 	}
-	body := map[string]any{"name": "Trajectory decision", "head_sha": head, "status": "completed", "conclusion": "neutral", "output": map[string]string{"title": "Decision recorded", "summary": "Repository-defined preimage and JSON checks passed. Behavioral sandbox checks are not connected.\n\nPatch SHA-256: `" + patch + "`"}, "actions": []map[string]string{{"label": "Revalidate", "description": "Recheck decision inputs and JSON assertions", "identifier": "revalidate"}, {"label": "Post decision", "description": "Post the decision receipt to the issue", "identifier": "show_decision"}}}
+	body := map[string]any{"name": "Trajectory decision", "head_sha": head, "status": "completed", "conclusion": "neutral", "output": map[string]string{"title": "Decision recorded", "summary": "Repository-defined preimage and JSON checks passed. Behavioral sandbox checks are not connected.\n\nPatch SHA-256: `" + patch + "`"}, "actions": []map[string]string{{"label": "Revalidate", "description": "Recheck inputs and JSON assertions", "identifier": "revalidate"}, {"label": "Post decision", "description": "Post the decision receipt to the issue", "identifier": "show_decision"}}}
 	var out struct {
 		ID int64 `json:"id"`
 	}
@@ -597,4 +597,20 @@ func (c *Client) CreateDecisionCheck(ctx context.Context, installation int64, re
 		return 0, errors.New("GitHub returned an invalid check ID")
 	}
 	return out.ID, nil
+}
+
+// CurrentComment reads the canonical body to reject delayed checkbox events.
+func (c *Client) CurrentComment(ctx context.Context, installation int64, repo string, id int64) (string, error) {
+	if id <= 0 {
+		return "", errors.New("invalid comment ID")
+	}
+	token, err := c.installationToken(ctx, installation, repo)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Body string `json:"body"`
+	}
+	err = c.request(ctx, token, http.MethodGet, repositoryRoute(repo)+"/issues/comments/"+strconv.FormatInt(id, 10), nil, &out)
+	return out.Body, err
 }

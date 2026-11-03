@@ -36,6 +36,17 @@ func (e *Engine) ensureCheck(ctx context.Context, inst int64, repo string, p *Pl
 	return e.save()
 }
 
+func (e *Engine) checkIssue(ev Event) int {
+	prefix := fmt.Sprintf("%d/%s/", ev.Installation.ID, ev.Repository.FullName)
+	for key, p := range e.data.Plans {
+		if p.CheckID > 0 && p.CheckID == ev.CheckRun.ID && strings.HasPrefix(key, prefix) {
+			n, _ := strconv.Atoi(strings.TrimPrefix(key, prefix))
+			return n
+		}
+	}
+	return 0
+}
+
 func (e *Engine) processCheck(ctx context.Context, ev Event) error {
 	inst, repo := ev.Installation.ID, ev.Repository.FullName
 	prefix := fmt.Sprintf("%d/%s/", inst, repo)

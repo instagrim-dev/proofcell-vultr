@@ -50,7 +50,7 @@ type Config struct {
 }
 type Plan struct {
 	DecisionComment, PublishComment, CheckID                          int64
-	DecisionBody, PublishBody, CheckHead                              string
+	DecisionBody, PublishBody, PublishPatch, CheckHead                string
 	Pending                                                           bool
 	LastComment                                                       int64
 	ID, IssueDigest, BaseBranch, BaseSHA, Choice, PatchHash, Diff, PR string
@@ -320,7 +320,13 @@ func (e *Engine) drain(ctx context.Context) {
 			j.Status = "failed"
 			j.Error = err.Error()
 			if j.Attempts == 3 {
-				_ = e.api.Comment(ctx, j.Event.Installation.ID, j.Event.Repository.FullName, j.Event.Issue.Number, "Trajectory could not complete this command: "+j.Error+". Submit a new command after correcting the inputs or restoring service.")
+				issue := j.Event.Issue.Number
+				if j.Event.Kind == "check_run" {
+					issue = e.checkIssue(j.Event)
+				}
+				if issue > 0 {
+					_ = e.api.Comment(ctx, j.Event.Installation.ID, j.Event.Repository.FullName, issue, "Trajectory could not complete this action: "+j.Error+". Correct the inputs or restore service, then try again.")
+				}
 			}
 		} else {
 			j.Status = "done"
@@ -350,6 +356,7 @@ func validPath(p string) bool {
 }
 func (e *Engine) process(ctx context.Context, ev Event) error {
 	inst, repo, n := ev.Installation.ID, ev.Repository.FullName, ev.Issue.Number
+	nativeApproval := false
 	if ev.Kind == "check_run" {
 		return e.processCheck(ctx, ev)
 	}
@@ -361,6 +368,25 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		p := e.data.Plans[fmt.Sprintf("%d/%s/%d", inst, repo, n)]
 		if p == nil {
 			return nil
+		}
+		allowed, err := e.api.CanWrite(ctx, inst, repo, ev.Sender.Login)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return fmt.Errorf("action requires current repository write permission")
+		}
+		reader, hasReader := e.api.(interface {
+			CurrentComment(context.Context, int64, string, int64) (string, error)
+		})
+		if hasReader && (ev.Comment.ID == p.DecisionComment || ev.Comment.ID == p.PublishComment) {
+			current, err := reader.CurrentComment(ctx, inst, repo, ev.Comment.ID)
+			if err != nil {
+				return err
+			}
+			if current != ev.Comment.Body {
+				return nil
+			}
 		}
 		switch ev.Comment.ID {
 		case p.DecisionComment:
@@ -376,14 +402,38 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 				}
 			}
 			if choice == "" {
+				p.PublishComment, p.PublishBody, p.PublishPatch = 0, "", ""
+				if err := e.save(); err != nil {
+					return err
+				}
+				if strings.Count(strings.ToLower(ev.Comment.Body), "[x]") > 1 {
+					return e.api.Comment(ctx, inst, repo, n, "Select one option: clear the other checkbox first.")
+				}
 				return nil
 			}
 			ev.Comment.Body = "/trajectory choose " + p.ID + " " + choice
 		case p.PublishComment:
-			if p.PublishComment == 0 || ev.Comment.Body != strings.Replace(p.PublishBody, "- [ ] Open draft pull request", "- [x] Open draft pull request", 1) {
+			if p.PublishComment == 0 || p.PublishPatch == "" || p.PublishPatch != p.PatchHash || ev.Comment.Body != strings.Replace(p.PublishBody, "- [ ] Open draft pull request", "- [x] Open draft pull request", 1) {
 				return nil
 			}
-			ev.Comment.Body = "/trajectory publish " + p.ID + " " + p.PatchHash[:12]
+			if hasReader {
+				current, err := reader.CurrentComment(ctx, inst, repo, p.DecisionComment)
+				if err != nil {
+					return err
+				}
+				match := false
+				for _, c := range p.Config.Choices {
+					if c.ID == p.Choice {
+						line := "- [ ] " + c.Title + " <!-- " + c.ID + " -->"
+						match = current == strings.Replace(p.DecisionBody, line, strings.Replace(line, "[ ]", "[x]", 1), 1)
+					}
+				}
+				if !match {
+					return fmt.Errorf("decision changed; review the latest choice before publishing")
+				}
+			}
+			nativeApproval = hasReader
+			ev.Comment.Body = "/trajectory publish " + p.ID + " " + p.PublishPatch[:12]
 		default:
 			return nil
 		}
@@ -553,6 +603,7 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 			p.LastComment = ev.Comment.ID
 		}
 		p.Pending = false
+		p.PublishComment, p.PublishBody, p.PublishPatch = 0, "", ""
 		p.Choice = selected.ID
 		p.PatchHash = hash(encoded)
 		p.Files = files
@@ -567,7 +618,7 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 			if err != nil {
 				return err
 			}
-			p.PublishComment, p.PublishBody = comment, msg
+			p.PublishComment, p.PublishBody, p.PublishPatch = comment, msg, p.PatchHash
 			return e.save()
 		}
 		return e.api.Comment(ctx, inst, repo, n, msg)
@@ -591,6 +642,32 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		return err
 	}
 	guard := func(ctx context.Context) error {
+		if nativeApproval {
+			reader := e.api.(interface {
+				CurrentComment(context.Context, int64, string, int64) (string, error)
+			})
+			current, err := reader.CurrentComment(ctx, inst, repo, p.DecisionComment)
+			if err != nil {
+				return err
+			}
+			match := false
+			for _, c := range p.Config.Choices {
+				if c.ID == p.Choice {
+					line := "- [ ] " + c.Title + " <!-- " + c.ID + " -->"
+					match = current == strings.Replace(p.DecisionBody, line, strings.Replace(line, "[ ]", "[x]", 1), 1)
+				}
+			}
+			if !match {
+				return fmt.Errorf("decision changed during publication")
+			}
+			approval, err := reader.CurrentComment(ctx, inst, repo, p.PublishComment)
+			if err != nil {
+				return err
+			}
+			if p.PublishPatch != p.PatchHash || approval != strings.Replace(p.PublishBody, "- [ ] Open draft pull request", "- [x] Open draft pull request", 1) {
+				return fmt.Errorf("approval changed during publication")
+			}
+		}
 		t, b, err := e.api.Issue(ctx, inst, repo, n)
 		if err != nil {
 			return err
