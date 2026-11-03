@@ -32,6 +32,9 @@ func TestRepairUsesModelCandidateAndIndependentSandbox(t *testing.T) {
 		}
 		var req map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req["max_tokens"].(float64) < 2048 {
+			t.Error("reasoning model needs enough output budget to return a candidate")
+		}
 		fmt.Fprint(w, `{"id":"call-1","model":"test-model","choices":[{"message":{"content":"func HasAccess(paidUntil, now int64) bool { return now < paidUntil }"}}]}`)
 	}))
 	defer s.Close()
