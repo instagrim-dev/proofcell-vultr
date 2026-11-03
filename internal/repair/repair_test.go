@@ -89,3 +89,18 @@ func TestUnixTransportPreservesCandidateAndReceipt(t *testing.T) {
 		t.Fatal("transport did not preserve candidate identity")
 	}
 }
+
+func TestRefundDecisionUsesImmediateAccessAndSandbox(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"id":"refund-call","model":"test-model","choices":[{"message":{"content":"func HasAccess(paidUntil, now int64) bool { return false }"}}]}`)
+	}))
+	defer s.Close()
+	sandbox := &fakeSandbox{pass: true}
+	svc := Service{Endpoint: s.URL, Key: "token", Model: "test-model", Sandbox: sandbox}
+	if _, err := svc.Repair(context.Background(), "refund", nil); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(testsFor("refund")), `{"before expiry",30,29,true}`) {
+		t.Fatal("refund must end access immediately")
+	}
+}

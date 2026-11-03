@@ -20,7 +20,7 @@ func (s DockerSandbox) Verify(ctx context.Context, choice string, source []byte)
 	if s.WorkRoot == "" || s.HostWorkRoot == "" || s.Image == "" {
 		return Evidence{}, fmt.Errorf("sandbox not configured")
 	}
-	if choice != "keep" && choice != "end" {
+	if choice != "keep" && choice != "end" && choice != "refund" {
 		return Evidence{}, fmt.Errorf("unsupported decision")
 	}
 	dir, err := os.MkdirTemp(s.WorkRoot, "run-")
@@ -75,7 +75,7 @@ func (s DockerSandbox) Verify(ctx context.Context, choice string, source []byte)
 }
 func testsFor(choice string) []byte {
 	expected := "true"
-	if choice == "end" {
+	if choice == "end" || choice == "refund" {
 		expected = "false"
 	}
 	return []byte(fmt.Sprintf(`package subscription

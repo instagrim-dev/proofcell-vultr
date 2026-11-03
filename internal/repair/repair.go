@@ -42,7 +42,7 @@ type Service struct {
 
 func digest(b []byte) string { v := sha256.Sum256(b); return hex.EncodeToString(v[:]) }
 func (s *Service) Repair(ctx context.Context, choice string, previous []byte) (Result, error) {
-	if choice != "keep" && choice != "end" {
+	if choice != "keep" && choice != "end" && choice != "refund" {
 		return Result{}, fmt.Errorf("unsupported decision")
 	}
 	if s.Key == "" || s.Model == "" || s.Sandbox == nil {
