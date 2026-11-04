@@ -226,7 +226,7 @@ func (s setupService) page(w http.ResponseWriter, r *http.Request) {
 		"default_permissions": map[string]string{
 			"metadata": "read", "issues": "write", "contents": "write", "pull_requests": "write", "checks": "write",
 		},
-		"default_events": []string{"issues", "issue_comment", "check_run"},
+		"default_events": []string{"issues", "issue_comment", "check_run", "check_suite"},
 	})
 	privatePage(w)
 	if err := setupPage.Execute(w, struct{ PublicURL, Manifest, State string }{s.publicURL, string(manifest), state}); err != nil {

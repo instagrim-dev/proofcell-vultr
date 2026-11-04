@@ -79,6 +79,10 @@ type Event struct {
 		ID      int64  `json:"id"`
 		HeadSHA string `json:"head_sha"`
 	} `json:"check_run"`
+	CheckSuite struct {
+		ID      int64  `json:"id"`
+		HeadSHA string `json:"head_sha"`
+	} `json:"check_suite"`
 	RequestedAction struct {
 		Identifier string `json:"identifier"`
 	} `json:"requested_action"`
@@ -231,13 +235,13 @@ func (e *Engine) Handler(secret string) http.Handler {
 		}
 		isIssue := ev.Kind == "issues" && (openedTrajectory || (ev.Action == "labeled" && ev.Label.Name == "trajectory") || ev.Action == "edited" || ev.Action == "closed")
 		isComment := ev.Kind == "issue_comment" && ((ev.Action == "created" && ev.Comment.User.Type != "Bot" && strings.HasPrefix(strings.TrimSpace(ev.Comment.Body), "/trajectory ")) || ev.Action == "edited") && (len(ev.Issue.PullRequest) == 0 || string(ev.Issue.PullRequest) == "null")
-		isCheck := ev.Kind == "check_run" && (ev.Action == "requested_action" || ev.Action == "rerequested")
+		isCheck := (ev.Kind == "check_run" && (ev.Action == "requested_action" || ev.Action == "rerequested")) || (ev.Kind == "check_suite" && ev.Action == "rerequested")
 		if !isIssue && !isComment && !isCheck {
 			w.WriteHeader(202)
 			return
 		}
 		id := r.Header.Get("X-GitHub-Delivery")
-		if id == "" || len(id) > 200 || ev.Installation.ID <= 0 || (!isCheck && ev.Issue.Number <= 0) || (isCheck && ev.CheckRun.ID <= 0) || !regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`).MatchString(ev.Repository.FullName) {
+		if id == "" || len(id) > 200 || ev.Installation.ID <= 0 || (!isCheck && ev.Issue.Number <= 0) || (ev.Kind == "check_run" && isCheck && ev.CheckRun.ID <= 0) || (ev.Kind == "check_suite" && isCheck && (ev.CheckSuite.ID <= 0 || ev.CheckSuite.HeadSHA == "")) || !regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`).MatchString(ev.Repository.FullName) {
 			http.Error(w, "missing event identity", 400)
 			return
 		}
@@ -399,6 +403,19 @@ func validPath(p string) bool {
 func (e *Engine) process(ctx context.Context, ev Event) error {
 	inst, repo, n := ev.Installation.ID, ev.Repository.FullName, ev.Issue.Number
 	nativeApproval := false
+	if ev.Kind == "check_suite" && ev.Action == "rerequested" {
+		prefix := fmt.Sprintf("%d/%s/", inst, repo)
+		for key, p := range e.data.Plans {
+			if strings.HasPrefix(key, prefix) && p.CheckHead == ev.CheckSuite.HeadSHA && p.CheckID > 0 {
+				next := ev
+				next.Kind = "check_run"
+				next.CheckRun.ID = p.CheckID
+				next.CheckRun.HeadSHA = p.CheckHead
+				return e.processCheck(ctx, next)
+			}
+		}
+		return nil
+	}
 	if ev.Kind == "check_run" {
 		return e.processCheck(ctx, ev)
 	}

@@ -57,3 +57,30 @@ func TestBoundaryAnnotationReferencesActualFunction(t *testing.T) {
 		t.Fatalf("%+v", a)
 	}
 }
+
+func TestSuiteRerequestRoutesToVerification(t *testing.T) {
+	e, f, p := deliverySetup(t)
+	if err := selectOutcome(e, f, p, "keep"); err != nil {
+		t.Fatal(err)
+	}
+	src := []byte("package subscription\nfunc HasAccess(paidUntil,now int64) bool { return now<paidUntil }\n")
+	p.Files["access.go"] = src
+	encoded, _ := json.Marshal(p.Files)
+	p.PatchHash = hash(encoded)
+	f.headFiles = p.Files
+	out := "--- PASS: TestBoundary/before_expiry \n--- PASS: TestBoundary/at_expiry \n--- PASS: TestBoundary/after_expiry \n--- PASS: TestBoundary/different_expiry \n"
+	evidence := repair.Evidence{TestsSHA256: repair.BoundaryTestsSHA256("keep"), Output: out, CanaryPreserved: true, CleanupConfirmed: true}
+	p.Generated = &repair.Result{Source: src, SourceSHA256: hash(src), Evidence: evidence}
+	worker := &rerunWorker{evidence: evidence}
+	e.Repairer = worker
+	ev := event("")
+	ev.Kind = "check_suite"
+	ev.Action = "rerequested"
+	ev.CheckSuite.HeadSHA = p.CheckHead
+	if err := e.process(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if worker.called != 1 {
+		t.Fatal("suite re-run did not run sandbox")
+	}
+}
