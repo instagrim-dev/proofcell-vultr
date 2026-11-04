@@ -193,3 +193,16 @@ func TestDeliveryProgressAndOutcomeNames(t *testing.T) {
 		t.Fatal("intent view should link to verification")
 	}
 }
+
+func TestEditedStatusCommentDoesNotTriggerDecisionAuthorization(t *testing.T) {
+	e, f, p := deliverySetup(t)
+	f.allowed = false
+	ev := event("")
+	ev.Kind = "issue_comment"
+	ev.Action = "edited"
+	ev.Comment.ID = p.DecisionComment + 99
+	ev.Sender.Login = "trajectorygha[bot]"
+	if err := e.process(context.Background(), ev); err != nil {
+		t.Fatalf("unrelated status edit caused error: %v", err)
+	}
+}

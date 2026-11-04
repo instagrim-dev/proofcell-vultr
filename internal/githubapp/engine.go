@@ -411,6 +411,9 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		if p == nil {
 			return nil
 		}
+		if ev.Comment.ID != p.DecisionComment && (p.PublishComment == 0 || ev.Comment.ID != p.PublishComment) {
+			return nil
+		}
 		allowed, err := e.api.CanWrite(ctx, inst, repo, ev.Sender.Login)
 		if err != nil {
 			return err
