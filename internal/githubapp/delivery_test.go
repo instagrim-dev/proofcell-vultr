@@ -206,3 +206,22 @@ func TestEditedStatusCommentDoesNotTriggerDecisionAuthorization(t *testing.T) {
 		t.Fatalf("unrelated status edit caused error: %v", err)
 	}
 }
+
+func TestRepeatedSelectionRepairsStaleStatus(t *testing.T) {
+	e, f, p := deliverySetup(t)
+	sf := &statusDeliveryFake{deliveryFake: f}
+	e.api = sf
+	if err := selectOutcome(e, f, p, "keep"); err != nil {
+		t.Fatal(err)
+	}
+	f.bodies[p.StatusCommentID] = "### Trajectory · Needs attention"
+	if err := selectOutcome(e, f, p, "keep"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.bodies[p.StatusCommentID], "Ready for intent review") {
+		t.Fatal("stale status did not recover")
+	}
+	if f.publications != 1 {
+		t.Fatal("retry created duplicate draft")
+	}
+}

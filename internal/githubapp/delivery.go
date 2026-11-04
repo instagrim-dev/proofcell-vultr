@@ -261,7 +261,7 @@ func (c *Client) PutDeliveryCheck(ctx context.Context, inst int64, repo string, 
 }
 
 func (e *Engine) announceOutcome(ctx context.Context, inst int64, repo string, n int, p *Plan) error {
-	if p.OutcomeAnnounced {
+	if p.OutcomeAnnounced && p.StatusCommentID == 0 {
 		return nil
 	}
 	msg := fmt.Sprintf("### Outcome: %s\n\n[Draft pull request](%s) · [Verification and intent review](%s/checks)\n\nThe selected decision has a patched branch. Review its proof in Checks before merging.", selectedTitle(p), p.PR, p.PR)
