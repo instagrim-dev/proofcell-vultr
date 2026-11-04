@@ -595,3 +595,52 @@ func TestUpdateDecisionCheckPreservesActions(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDeliveryChecksKeepEvidenceNativeAndReconcileRetries(t *testing.T) {
+	created := false
+	posts := 0
+	patches := 0
+	c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/app/installations/") {
+			fmt.Fprint(w, `{"token":"install"}`)
+			return
+		}
+		if r.Method == "GET" {
+			if created {
+				fmt.Fprint(w, `{"check_runs":[{"id":123,"external_id":"receipt","head_sha":"head"}]}`)
+			} else {
+				fmt.Fprint(w, `{"check_runs":[]}`)
+			}
+			return
+		}
+		var body struct {
+			Name, Conclusion, DetailsURL string
+			Output                       struct{ Title, Summary, Text string }
+			Actions                      []CheckAction
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Output.Text != "raw test output" || body.Conclusion != "action_required" || body.Actions[0].Identifier != "confirm_intent" {
+			t.Errorf("missing native evidence: %+v", body)
+		}
+		if r.Method == "POST" {
+			posts++
+			created = true
+		} else if r.Method == "PATCH" {
+			patches++
+		}
+		fmt.Fprint(w, `{"id":123}`)
+	})
+	report := CheckReport{Head: "head", Key: "receipt", Name: "Trajectory / Intent", Conclusion: "action_required", Title: "Review intent", Summary: "Issue intent", Text: "raw test output", Actions: []CheckAction{{"Confirm intent", "Connect proof to intent", "confirm_intent"}}}
+	for i := 0; i < 2; i++ {
+		id, err := c.PutDeliveryCheck(context.Background(), 7, "acme/project", report)
+		if err != nil || id != 123 {
+			t.Fatalf("check %d: %v", id, err)
+		}
+	}
+	if posts != 1 || patches != 1 {
+		t.Fatalf("retry duplicated check: %d creates, %d updates", posts, patches)
+	}
+}

@@ -46,12 +46,15 @@ type Choice struct {
 	Checks  []Check  `json:"checks"`
 }
 type Config struct {
+	Delivery   string   `json:"delivery,omitempty"`
 	Generation string   `json:"generation,omitempty"`
 	Version    int      `json:"version"`
 	Question   string   `json:"question"`
 	Choices    []Choice `json:"choices"`
 }
 type Plan struct {
+	IntentCheckID                                                     int64
+	PreviousPR, IntentConfirmedBy, IntentTitle                        string
 	Generated                                                         *repair.Result
 	DecisionComment, PublishComment, CheckID                          int64
 	DecisionBody, PublishBody, PublishPatch, CheckHead                string
@@ -209,7 +212,7 @@ func (e *Engine) Handler(secret string) http.Handler {
 			return
 		}
 		ev.Kind = r.Header.Get("X-GitHub-Event")
-		isIssue := ev.Kind == "issues" && ev.Action == "labeled" && ev.Label.Name == "trajectory"
+		isIssue := ev.Kind == "issues" && ((ev.Action == "labeled" && ev.Label.Name == "trajectory") || ev.Action == "edited" || ev.Action == "closed")
 		isComment := ev.Kind == "issue_comment" && ((ev.Action == "created" && ev.Comment.User.Type != "Bot" && strings.HasPrefix(strings.TrimSpace(ev.Comment.Body), "/trajectory ")) || ev.Action == "edited") && (len(ev.Issue.PullRequest) == 0 || string(ev.Issue.PullRequest) == "null")
 		isCheck := ev.Kind == "check_run" && ev.Action == "requested_action"
 		if !isIssue && !isComment && !isCheck {
@@ -377,6 +380,20 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 	if ev.Kind == "check_run" {
 		return e.processCheck(ctx, ev)
 	}
+	if ev.Kind == "issues" && (ev.Action == "edited" || ev.Action == "closed") {
+		p := e.data.Plans[fmt.Sprintf("%d/%s/%d", inst, repo, n)]
+		if p == nil {
+			return nil
+		}
+		title, body, err := e.api.Issue(ctx, inst, repo, n)
+		if err != nil {
+			return err
+		}
+		if ev.Action == "closed" || issueHash(title, body) != p.IssueDigest {
+			return e.invalidateIntent(ctx, inst, repo, n, p, "Issue intent changed; select a new decision")
+		}
+		return nil
+	}
 	if ev.Kind == "issues" {
 		ev.Comment.Body = "/trajectory plan"
 		ev.Comment.ID = 0
@@ -407,7 +424,7 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		}
 		switch ev.Comment.ID {
 		case p.DecisionComment:
-			if p.DecisionComment == 0 || p.PR != "" {
+			if p.DecisionComment == 0 || (p.PR != "" && p.Config.Delivery != "on-decision") {
 				return nil
 			}
 			choice := ""
@@ -419,6 +436,9 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 				}
 			}
 			if choice == "" {
+				if err := e.invalidateIntent(ctx, inst, repo, n, p, "Decision selection changed"); err != nil {
+					return err
+				}
 				p.PublishComment, p.PublishBody, p.PublishPatch = 0, "", ""
 				if err := e.save(); err != nil {
 					return err
@@ -493,6 +513,9 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		if err = json.Unmarshal(b, &cfg); err != nil {
 			return err
 		}
+		if cfg.Delivery != "" && cfg.Delivery != "on-decision" {
+			return fmt.Errorf("unsupported delivery mode")
+		}
 		if cfg.Generation != "" && cfg.Generation != "vultr-go-access-v1" {
 			return fmt.Errorf("unsupported generation mode")
 		}
@@ -508,7 +531,12 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		}
 		id := hash([]byte(issueHash(title, body) + base + hash(b)))[:12]
 		if p == nil || p.ID != id {
-			p = &Plan{ID: id, IssueDigest: issueHash(title, body), BaseBranch: branch, BaseSHA: base, Config: cfg}
+			if p != nil {
+				if err := e.invalidateIntent(ctx, inst, repo, n, p, "Superseded by a new intent revision"); err != nil {
+					return err
+				}
+			}
+			p = &Plan{IntentTitle: title, ID: id, IssueDigest: issueHash(title, body), BaseBranch: branch, BaseSHA: base, Config: cfg}
 		}
 		if ev.Comment.ID > 0 {
 			p.LastComment = ev.Comment.ID
@@ -572,6 +600,14 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		}
 		if selected == nil {
 			return fmt.Errorf("unknown choice")
+		}
+		if p.Config.Delivery == "on-decision" {
+			if p.Choice == selected.ID && p.PR != "" {
+				return e.ensureCheck(ctx, inst, repo, p)
+			}
+			if err := e.invalidateIntent(ctx, inst, repo, n, p, "Superseded by a new decision"); err != nil {
+				return err
+			}
 		}
 		files := map[string][]byte{}
 		var generated *repair.Result
@@ -648,9 +684,18 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		p.Files = files
 		p.Generated = generated
 		p.Diff = diff
+		p.PreviousPR = p.PR
 		p.PR = ""
+		p.CheckID, p.CheckHead = 0, ""
+		p.IntentCheckID, p.IntentConfirmedBy = 0, ""
 		if err = e.save(); err != nil {
 			return err
+		}
+		if p.Config.Delivery == "on-decision" {
+			next := ev
+			next.Kind, next.Action = "", ""
+			next.Comment.Body = "/trajectory publish " + p.ID + " " + p.PatchHash[:12]
+			return e.process(ctx, next)
 		}
 		verification := "Behavioral sandbox checks: not connected."
 		if p.Generated != nil {
@@ -689,6 +734,11 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		return err
 	}
 	guard := func(ctx context.Context) error {
+		if p.Config.Delivery == "on-decision" {
+			if err := e.currentSelection(ctx, inst, repo, p); err != nil {
+				return err
+			}
+		}
 		if nativeApproval {
 			reader := e.api.(interface {
 				CurrentComment(context.Context, int64, string, int64) (string, error)
@@ -728,7 +778,11 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		return err
 	}
 	ctx = WithPublicationGuard(ctx, guard)
-	pr, err := e.api.Publish(ctx, inst, repo, p.BaseBranch, p.BaseSHA, appBranch, "Trajectory: "+title, fmt.Sprintf("Resolves #%d\n\nOwner: @%s\nDecision: %s\nPlan: %s\nBase: %s\nPatch SHA-256: %s\n\n%s\n", n, ev.Sender.Login, p.Choice, p.ID, p.BaseSHA, p.PatchHash, checkSummary(p)), p.Files)
+	prBody := fmt.Sprintf("Resolves #%d\n\nOwner: @%s\nDecision: %s\nPlan: %s\nBase: %s\nPatch SHA-256: %s\n\n%s\n", n, ev.Sender.Login, p.Choice, p.ID, p.BaseSHA, p.PatchHash, checkSummary(p))
+	if p.Config.Delivery == "on-decision" {
+		prBody = fmt.Sprintf("Resolves #%d\n\n**Selected outcome:** %s\n\nReview the patch in Files changed. The Checks tab contains independent verification, full evidence, and the intent confirmation. Confirm that the evidence resolves the issue before using GitHub's normal merge workflow.", n, selectedTitle(p))
+	}
+	pr, err := e.api.Publish(ctx, inst, repo, p.BaseBranch, p.BaseSHA, appBranch, "Trajectory: "+title, prBody, p.Files)
 	if err != nil {
 		return err
 	}
@@ -742,6 +796,9 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 	}
 	if err := e.ensureCheck(ctx, inst, repo, p); err != nil {
 		return err
+	}
+	if p.Config.Delivery == "on-decision" {
+		return e.api.Comment(ctx, inst, repo, n, fmt.Sprintf("### Outcome: %s\n\n[Draft pull request](%s) · [Verification and intent review](%s/checks)\n\nThe selected decision has a patched branch. Review its proof in Checks before merging.", p.Choice, pr, pr))
 	}
 	return e.api.Comment(ctx, inst, repo, n, "Draft PR: "+pr+"\nPatch: `"+p.PatchHash+"`")
 }

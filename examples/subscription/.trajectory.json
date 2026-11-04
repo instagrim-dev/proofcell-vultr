@@ -79,5 +79,6 @@
         }
       ]
     }
-  ]
+  ],
+  "delivery": "on-decision"
 }

@@ -27,6 +27,20 @@ func checkSummary(p *Plan) string {
 }
 
 func (e *Engine) ensureCheck(ctx context.Context, inst int64, repo string, p *Plan) error {
+	if p.Config.Delivery == "on-decision" {
+		if _, ok := e.api.(deliveryAPI); !ok {
+			return fmt.Errorf("delivery checks unavailable")
+		}
+		prefix := fmt.Sprintf("%d/%s/", inst, repo)
+		for key, plan := range e.data.Plans {
+			if plan == p && strings.HasPrefix(key, prefix) {
+				n, _ := strconv.Atoi(strings.TrimPrefix(key, prefix))
+				return e.ensureDeliveryChecks(ctx, inst, repo, n, p)
+			}
+		}
+		return fmt.Errorf("decision plan missing")
+	}
+
 	api, ok := e.api.(nativeAPI)
 	if !ok || p.CheckID != 0 {
 		return nil
@@ -52,7 +66,7 @@ func (e *Engine) ensureCheck(ctx context.Context, inst int64, repo string, p *Pl
 func (e *Engine) checkIssue(ev Event) int {
 	prefix := fmt.Sprintf("%d/%s/", ev.Installation.ID, ev.Repository.FullName)
 	for key, p := range e.data.Plans {
-		if p.CheckID > 0 && p.CheckID == ev.CheckRun.ID && strings.HasPrefix(key, prefix) {
+		if ((p.CheckID > 0 && p.CheckID == ev.CheckRun.ID) || (p.IntentCheckID > 0 && p.IntentCheckID == ev.CheckRun.ID)) && strings.HasPrefix(key, prefix) {
 			n, _ := strconv.Atoi(strings.TrimPrefix(key, prefix))
 			return n
 		}
@@ -66,7 +80,7 @@ func (e *Engine) processCheck(ctx context.Context, ev Event) error {
 	var p *Plan
 	var n int
 	for key, candidate := range e.data.Plans {
-		if strings.HasPrefix(key, prefix) && candidate.CheckID == ev.CheckRun.ID && candidate.CheckID > 0 {
+		if strings.HasPrefix(key, prefix) && ((candidate.CheckID == ev.CheckRun.ID && candidate.CheckID > 0) || (candidate.IntentCheckID == ev.CheckRun.ID && candidate.IntentCheckID > 0)) {
 			p = candidate
 			n, _ = strconv.Atoi(strings.TrimPrefix(key, prefix))
 			break
@@ -74,6 +88,9 @@ func (e *Engine) processCheck(ctx context.Context, ev Event) error {
 	}
 	if p == nil || n <= 0 || p.PR == "" || ev.CheckRun.HeadSHA != p.CheckHead {
 		return nil
+	}
+	if p.Config.Delivery == "on-decision" {
+		return e.processDeliveryCheck(ctx, ev, n, p)
 	}
 	allowed, err := e.api.CanWrite(ctx, inst, repo, ev.Sender.Login)
 	if err != nil {
