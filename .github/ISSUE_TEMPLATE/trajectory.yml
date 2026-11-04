@@ -4,7 +4,7 @@ labels: [trajectory]
 body:
   - type: markdown
     attributes:
-      value: Tell us about the experience you want to improve. Trajectory will offer reviewable choices after the issue is created.
+      value: Tell us about the experience you want to improve. When installed, Trajectory can offer reviewable choices after the issue is created.
   - type: textarea
     id: problem
     attributes:
