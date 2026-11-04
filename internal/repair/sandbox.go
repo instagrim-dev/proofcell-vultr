@@ -85,7 +85,6 @@ func TestBoundary(t *testing.T) {
  {"before expiry",30,29,%s}, {"at expiry",30,30,false}, {"after expiry",30,31,false}, {"different expiry",18,17,%s},
  } { t.Run(tc.name,func(t *testing.T){if got:=HasAccess(tc.paidUntil,tc.now);got!=tc.want{t.Fatalf("got %%v, want %%v",got,tc.want)}}) }
 }
-
 `, expected, expected))
 }
 
