@@ -308,7 +308,7 @@ func (e *Engine) processDeliveryCheck(ctx context.Context, ev Event, n int, p *P
 	if err := e.ensureDeliveryChecks(ctx, inst, repo, n, p); err != nil {
 		return err
 	}
-	if ev.RequestedAction.Identifier == "confirm_intent" && p.StatusCommentID != 0 {
+	if (ev.RequestedAction.Identifier == "confirm_intent" || ev.Action == "rerequested") && p.StatusCommentID != 0 {
 		return e.announceOutcome(ctx, inst, repo, n, p)
 	}
 	return nil
