@@ -85,5 +85,14 @@ func TestBoundary(t *testing.T) {
  {"before expiry",30,29,%s}, {"at expiry",30,30,false}, {"after expiry",30,31,false}, {"different expiry",18,17,%s},
  } { t.Run(tc.name,func(t *testing.T){if got:=HasAccess(tc.paidUntil,tc.now);got!=tc.want{t.Fatalf("got %%v, want %%v",got,tc.want)}}) }
 }
+
 `, expected, expected))
+}
+
+// BoundaryTestsSHA256 identifies the independently authored test suite for a choice.
+func BoundaryTestsSHA256(choice string) string {
+	if choice != "keep" && choice != "end" && choice != "refund" {
+		return ""
+	}
+	return digest(testsFor(choice))
 }

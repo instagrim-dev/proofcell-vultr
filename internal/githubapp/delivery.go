@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/instagrim-dev/proofcell-vultr/internal/repair"
 )
 
 type CheckAction struct {
@@ -38,6 +40,22 @@ func selectedTitle(p *Plan) string {
 }
 func deliverySummary(repo string, n int, p *Plan) string {
 	return fmt.Sprintf("**Intent:** [#%d — %s](https://github.com/%s/issues/%d)\n\n**Decision:** %s\n\n**Outcome:** [Draft pull request](%s)\n\nQuestion: %s", n, p.IntentTitle, repo, n, selectedTitle(p), p.PR, p.Config.Question)
+}
+func proofSummary(p *Plan) string {
+	if p.Generated == nil || repair.BoundaryTestsSHA256(p.Choice) == "" || p.Generated.Evidence.TestsSHA256 != repair.BoundaryTestsSHA256(p.Choice) {
+		return ""
+	}
+	out := p.Generated.Evidence.Output
+	for _, name := range []string{"before_expiry", "different_expiry", "at_expiry", "after_expiry"} {
+		if !strings.Contains(out, "--- PASS: TestBoundary/"+name+" ") {
+			return ""
+		}
+	}
+	before := "denied"
+	if p.Choice == "keep" {
+		before = "allowed"
+	}
+	return fmt.Sprintf("\n\n### What was checked\n\n| Expected in the access function | Observed in independent sandbox tests |\n| --- | --- |\n| Access is %s just before expiry. | Passed for both tested inputs (2/2). |\n| Access is denied at expiry and just after expiry. | Passed for both tested inputs (2/2). |\n\nFor PR head `%s`, configured JSON assertions and the PR tree comparison also passed. These tests exercise a bounded function, not a live customer account or billing system.", before, p.CheckHead)
 }
 func proofText(p *Plan) string {
 	text := fmt.Sprintf("### Binding\n\n| Evidence | Recorded value |\n|---|---|\n| Issue digest | `%s` |\n| Plan | `%s` |\n| Base commit | `%s` |\n| Patched commit | `%s` |\n| Patch SHA-256 | `%s` |\n\n### Verification scope\n\nRepository-defined file preimages and JSON assertions, plus exact PR tree comparison.\n", p.IssueDigest, p.ID, p.BaseSHA, p.CheckHead, p.PatchHash)
@@ -126,7 +144,7 @@ func (e *Engine) ensureDeliveryChecks(ctx context.Context, inst int64, repo stri
 		conclusion = "success"
 		scope = "Independent boundary checks and patch linkage passed"
 	}
-	id, err := api.PutDeliveryCheck(ctx, inst, repo, CheckReport{ID: p.CheckID, Head: head, Key: p.ID + ":" + p.PatchHash + ":verification", Name: "Trajectory / Verification", Conclusion: conclusion, Title: scope, Summary: deliverySummary(repo, n, p), Text: proofText(p), DetailsURL: p.PR + "/files", Actions: []CheckAction{{"Validate linkage", "Recheck intent, decision and PR tree", "revalidate"}}})
+	id, err := api.PutDeliveryCheck(ctx, inst, repo, CheckReport{ID: p.CheckID, Head: head, Key: p.ID + ":" + p.PatchHash + ":verification", Name: "Trajectory / Verification", Conclusion: conclusion, Title: scope, Summary: deliverySummary(repo, n, p) + proofSummary(p), Text: proofText(p), DetailsURL: p.PR + "/files", Actions: []CheckAction{{"Validate linkage", "Recheck intent, decision and PR tree", "revalidate"}}})
 	if err != nil {
 		return err
 	}

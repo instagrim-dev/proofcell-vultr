@@ -40,10 +40,11 @@ type Check struct {
 	Equals any    `json:"equals"`
 }
 type Choice struct {
-	ID      string   `json:"id"`
-	Title   string   `json:"title"`
-	Changes []Change `json:"changes"`
-	Checks  []Check  `json:"checks"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description,omitempty"`
+	Changes     []Change `json:"changes"`
+	Checks      []Check  `json:"checks"`
 }
 type Config struct {
 	Delivery   string   `json:"delivery,omitempty"`
@@ -535,7 +536,7 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		}
 		ids := map[string]bool{}
 		for _, c := range cfg.Choices {
-			if !regexp.MustCompile(`^[a-z0-9-]{1,40}$`).MatchString(c.ID) || ids[c.ID] || c.Title == "" || strings.ContainsAny(c.Title, "\r\n<>") || len(c.Changes) == 0 || len(c.Changes) > 10 || len(c.Checks) == 0 {
+			if !regexp.MustCompile(`^[a-z0-9-]{1,40}$`).MatchString(c.ID) || ids[c.ID] || c.Title == "" || strings.ContainsAny(c.Title, "\r\n<>") || len(c.Description) > 500 || strings.ContainsAny(c.Description, "\r\n<>") || len(c.Changes) == 0 || len(c.Changes) > 10 || len(c.Checks) == 0 {
 				return fmt.Errorf("invalid choice")
 			}
 			ids[c.ID] = true
@@ -570,10 +571,7 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		if err = e.save(); err != nil {
 			return err
 		}
-		msg := "### Trajectory decision `" + id + "`\n" + cfg.Question + "\n\nSelect one option:\n"
-		for _, c := range cfg.Choices {
-			msg += fmt.Sprintf("- [ ] %s <!-- %s -->\n", c.Title, c.ID)
-		}
+		msg := decisionComment(id, cfg)
 		if api, ok := e.api.(nativeAPI); ok {
 			comment, err := api.ControlComment(ctx, inst, repo, n, msg)
 			if err != nil {
