@@ -53,6 +53,8 @@ type Config struct {
 	Choices    []Choice `json:"choices"`
 }
 type Plan struct {
+	StatusCommentID                                                   int64
+	PreviousChoice                                                    string
 	OutcomeAnnounced                                                  bool
 	IntentCheckID                                                     int64
 	PreviousPR, IntentConfirmedBy, IntentTitle                        string
@@ -347,7 +349,12 @@ func (e *Engine) drain(ctx context.Context) {
 		}
 		if j.Status == "reporting" {
 			call, cancel := context.WithTimeout(ctx, 30*time.Second)
-			err = e.api.Comment(call, j.Event.Installation.ID, j.Event.Repository.FullName, j.ReportIssue, "Trajectory could not complete this action: "+j.Error+". Correct the inputs or restore service, then try again.")
+			p := e.data.Plans[fmt.Sprintf("%d/%s/%d", j.Event.Installation.ID, j.Event.Repository.FullName, j.ReportIssue)]
+			if p != nil && p.StatusCommentID != 0 {
+				err = e.deliveryStatus(call, j.Event.Installation.ID, j.Event.Repository.FullName, j.ReportIssue, p, "Needs attention", "Could not complete: "+j.Error+". Retry after correcting the inputs.")
+			} else {
+				err = e.api.Comment(call, j.Event.Installation.ID, j.Event.Repository.FullName, j.ReportIssue, "Trajectory could not complete this action: "+j.Error+". Correct the inputs or restore service, then try again.")
+			}
 			cancel()
 			if err == nil {
 				j.Status = "failed"
@@ -531,6 +538,20 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 			ids[c.ID] = true
 		}
 		id := hash([]byte(issueHash(title, body) + base + hash(b)))[:12]
+		if p != nil && p.ID == id && p.DecisionComment != 0 {
+			if p.Config.Delivery == "on-decision" && p.IntentConfirmedBy != "" {
+				if err := e.currentSelection(ctx, inst, repo, p); err != nil {
+					if invalidErr := e.invalidateIntent(ctx, inst, repo, n, p, "Decision control changed"); invalidErr != nil {
+						return invalidErr
+					}
+					return err
+				}
+			}
+			if ev.Comment.ID > 0 {
+				p.LastComment = ev.Comment.ID
+			}
+			return e.save()
+		}
 		if p == nil || p.ID != id {
 			if p != nil {
 				if err := e.invalidateIntent(ctx, inst, repo, n, p, "Superseded by a new intent revision"); err != nil {
@@ -603,6 +624,12 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 			return fmt.Errorf("unknown choice")
 		}
 		if p.Config.Delivery == "on-decision" {
+			if p.Pending && p.Choice == selected.ID && p.PR == "" && p.PatchHash != "" {
+				next := ev
+				next.Kind, next.Action = "", ""
+				next.Comment.Body = "/trajectory publish " + p.ID + " " + p.PatchHash[:12]
+				return e.process(ctx, next)
+			}
 			if p.Choice == selected.ID && p.PR != "" {
 				if err := e.ensureCheck(ctx, inst, repo, p); err != nil {
 					return err
@@ -610,6 +637,11 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 				return e.announceOutcome(ctx, inst, repo, n, p)
 			}
 			if err := e.invalidateIntent(ctx, inst, repo, n, p, "Superseded by a new decision"); err != nil {
+				return err
+			}
+		}
+		if p.Config.Delivery == "on-decision" {
+			if err := e.deliveryStatus(ctx, inst, repo, n, p, "Preparing", "Preparing the selected outcome and its verification."); err != nil {
 				return err
 			}
 		}
@@ -683,6 +715,7 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		}
 		p.Pending = false
 		p.PublishComment, p.PublishBody, p.PublishPatch = 0, "", ""
+		p.PreviousChoice = p.Choice
 		p.Choice = selected.ID
 		p.PatchHash = hash(encoded)
 		p.Files = files
@@ -787,7 +820,11 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 	if p.Config.Delivery == "on-decision" {
 		prBody = fmt.Sprintf("Resolves #%d\n\n**Selected outcome:** %s\n\nReview the patch in Files changed. The Checks tab contains independent verification, full evidence, and the intent confirmation. Confirm that the evidence resolves the issue before using GitHub's normal merge workflow.", n, selectedTitle(p))
 	}
-	pr, err := e.api.Publish(ctx, inst, repo, p.BaseBranch, p.BaseSHA, appBranch, "Trajectory: "+title, prBody, p.Files)
+	prTitle := "Trajectory: " + title
+	if p.Config.Delivery == "on-decision" {
+		prTitle = "Trajectory: " + selectedTitle(p) + " — " + title
+	}
+	pr, err := e.api.Publish(ctx, inst, repo, p.BaseBranch, p.BaseSHA, appBranch, prTitle, prBody, p.Files)
 	if err != nil {
 		return err
 	}

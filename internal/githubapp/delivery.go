@@ -45,7 +45,12 @@ func proofText(p *Plan) string {
 		g := p.Generated
 		text += fmt.Sprintf("\nIndependent sandbox checks the bounded access function at expiry boundaries.\n\n| Provenance | Value |\n|---|---|\n| Model | `%s` |\n| Inference response | `%s` |\n| Candidate SHA-256 | `%s` |\n| Test SHA-256 | `%s` |\n| Host canary preserved | `%t` |\n| Sandbox removed | `%t` |\n\n### Actual test output\n\n```text\n%s\n```\n", g.Model, g.RequestID, g.SourceSHA256, g.Evidence.TestsSHA256, g.Evidence.CanaryPreserved, g.Evidence.CleanupConfirmed, strings.ReplaceAll(g.Evidence.Output, "```", "'''"))
 	}
-	return text + "\nValidate linkage rechecks the current issue, selected outcome, base and PR tree against this receipt; it does not rerun the sandbox."
+	return "### Outcome and observed checks\n\n**Selected outcome:** " + selectedTitle(p) + "\n\nThe declared JSON checks and exact PR tree comparison passed." + func() string {
+		if p.Generated != nil {
+			return " Independent sandbox boundary tests passed; the host canary remained intact and the container was removed."
+		}
+		return ""
+	}() + "\n\n" + text + "\nValidate linkage rechecks the current issue, selected outcome, base and PR tree against this receipt; it does not rerun the sandbox."
 }
 func intentReport(repo string, n int, p *Plan, conclusion, reason string) CheckReport {
 	reviewer := "Awaiting review"
@@ -56,7 +61,7 @@ func intentReport(repo string, n int, p *Plan, conclusion, reason string) CheckR
 	if conclusion == "action_required" {
 		actions = append(actions, CheckAction{"Confirm intent", "Connect this proof to the issue intent", "confirm_intent"})
 	}
-	return CheckReport{ID: p.IntentCheckID, Head: p.CheckHead, Key: p.ID + ":" + p.PatchHash + ":intent", Name: "Trajectory / Intent", Conclusion: conclusion, Title: reason, Summary: deliverySummary(repo, n, p), Text: proofText(p) + "\n\nIntent reviewer: " + reviewer + "\n\nConfirm intent means the reviewer has assessed whether this proof resolves the linked issue. Merge uses GitHub's normal PR review and branch rules.", DetailsURL: fmt.Sprintf("https://github.com/%s/issues/%d", repo, n), Actions: actions}
+	return CheckReport{ID: p.IntentCheckID, Head: p.CheckHead, Key: p.ID + ":" + p.PatchHash + ":intent", Name: "Trajectory / Intent", Conclusion: conclusion, Title: reason, Summary: deliverySummary(repo, n, p), Text: "Review the selected outcome and [full verification evidence](" + p.PR + "/checks?check_run_id=" + strconv.FormatInt(p.CheckID, 10) + ").\n\nIntent reviewer: " + reviewer + "\n\nConfirm intent means the reviewer has assessed whether this proof resolves the linked issue. Merge uses GitHub's normal PR review and branch rules.", DetailsURL: fmt.Sprintf("https://github.com/%s/issues/%d", repo, n), Actions: actions}
 }
 
 func (e *Engine) invalidateIntent(ctx context.Context, inst int64, repo string, n int, p *Plan, reason string) error {
@@ -261,11 +266,42 @@ func (e *Engine) announceOutcome(ctx context.Context, inst int64, repo string, n
 	}
 	msg := fmt.Sprintf("### Outcome: %s\n\n[Draft pull request](%s) · [Verification and intent review](%s/checks)\n\nThe selected decision has a patched branch. Review its proof in Checks before merging.", selectedTitle(p), p.PR, p.PR)
 	if p.PreviousPR != "" && p.PreviousPR != p.PR {
-		msg += "\n\n[Earlier outcome](" + p.PreviousPR + ") · intent confirmation superseded."
+		label := p.PreviousChoice
+		for _, c := range p.Config.Choices {
+			if c.ID == p.PreviousChoice {
+				label = c.Title
+			}
+		}
+		msg += "\n\n[Earlier outcome: " + label + "](" + p.PreviousPR + ") · intent confirmation superseded."
 	}
-	if err := e.api.Comment(ctx, inst, repo, n, msg); err != nil {
+	if p.StatusCommentID != 0 {
+		if err := e.deliveryStatus(ctx, inst, repo, n, p, "Ready for intent review", msg); err != nil {
+			return err
+		}
+	} else if err := e.api.Comment(ctx, inst, repo, n, msg); err != nil {
 		return err
 	}
 	p.OutcomeAnnounced = true
 	return e.save()
+}
+
+// deliveryStatus keeps one GitHub-native status comment for the current plan.
+func (e *Engine) deliveryStatus(ctx context.Context, inst int64, repo string, n int, p *Plan, state, body string) error {
+	api, ok := e.api.(interface {
+		ControlComment(context.Context, int64, string, int, string) (int64, error)
+		UpdateComment(context.Context, int64, string, int64, string) error
+	})
+	if !ok {
+		return nil
+	}
+	msg := "### Trajectory · " + state + "\n\n" + body
+	if p.StatusCommentID == 0 {
+		id, err := api.ControlComment(ctx, inst, repo, n, msg)
+		if err != nil {
+			return err
+		}
+		p.StatusCommentID = id
+		return e.save()
+	}
+	return api.UpdateComment(ctx, inst, repo, p.StatusCommentID, msg)
 }

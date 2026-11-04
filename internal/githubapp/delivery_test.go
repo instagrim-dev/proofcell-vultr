@@ -155,3 +155,41 @@ func TestNativeDeliveryActionsFitGitHubLimits(t *testing.T) {
 		}
 	}
 }
+
+type statusDeliveryFake struct {
+	*deliveryFake
+	updates []string
+	titles  []string
+}
+
+func (f *statusDeliveryFake) UpdateComment(_ context.Context, _ int64, _ string, id int64, body string) error {
+	f.bodies[id] = body
+	f.updates = append(f.updates, body)
+	return nil
+}
+func (f *statusDeliveryFake) Publish(ctx context.Context, i int64, r, b, sha, branch, title, body string, files map[string][]byte) (string, error) {
+	f.titles = append(f.titles, title)
+	return f.deliveryFake.Publish(ctx, i, r, b, sha, branch, title, body, files)
+}
+func TestDeliveryProgressAndOutcomeNames(t *testing.T) {
+	e, f, p := deliverySetup(t)
+	sf := &statusDeliveryFake{deliveryFake: f}
+	e.api = sf
+	if err := selectOutcome(e, f, p, "keep"); err != nil {
+		t.Fatal(err)
+	}
+	if p.StatusCommentID == 0 || !strings.Contains(f.bodies[p.StatusCommentID], "Ready for intent review") || len(sf.updates) != 1 {
+		t.Fatal("missing updated progress and outcome")
+	}
+	if !strings.Contains(sf.titles[0], "Keep access") {
+		t.Fatalf("outcome missing from draft title: %s", sf.titles[0])
+	}
+	verification := f.reports[p.CheckID]
+	if !strings.HasPrefix(verification.Text, "### Outcome and observed checks") {
+		t.Fatal("verification does not lead with observed behavior")
+	}
+	intent := f.reports[p.IntentCheckID]
+	if strings.Contains(intent.Text, "### Binding") || !strings.Contains(intent.Text, "full verification evidence") {
+		t.Fatal("intent view should link to verification")
+	}
+}

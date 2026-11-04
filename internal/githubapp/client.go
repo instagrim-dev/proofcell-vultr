@@ -720,3 +720,14 @@ func (c *Client) UpdateDecisionCheck(ctx context.Context, installation int64, re
 	body := map[string]any{"status": "completed", "conclusion": "neutral", "actions": decisionActions(), "output": map[string]string{"title": "Decision revalidated", "summary": summary + "\n\nPatch SHA-256: `" + patch + "`"}}
 	return c.request(ctx, token, http.MethodPatch, repositoryRoute(repo)+"/check-runs/"+strconv.FormatInt(id, 10), body, nil)
 }
+
+func (c *Client) UpdateComment(ctx context.Context, installation int64, repo string, id int64, body string) error {
+	if id <= 0 {
+		return errors.New("invalid comment ID")
+	}
+	token, err := c.installationToken(ctx, installation, repo)
+	if err != nil {
+		return err
+	}
+	return c.request(ctx, token, http.MethodPatch, repositoryRoute(repo)+"/issues/comments/"+strconv.FormatInt(id, 10), map[string]string{"body": body}, nil)
+}
