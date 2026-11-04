@@ -141,3 +141,17 @@ func TestEditingIssueRevokesConfirmedIntent(t *testing.T) {
 		t.Fatal("edited issue retained successful intent check")
 	}
 }
+
+func TestNativeDeliveryActionsFitGitHubLimits(t *testing.T) {
+	e, f, p := deliverySetup(t)
+	if err := selectOutcome(e, f, p, "keep"); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range f.reports {
+		for _, a := range r.Actions {
+			if len(a.Description) > 40 || len(a.Label) > 20 || len(a.Identifier) > 20 {
+				t.Fatalf("invalid GitHub action: %+v", a)
+			}
+		}
+	}
+}

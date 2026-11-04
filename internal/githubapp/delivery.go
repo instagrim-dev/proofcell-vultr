@@ -48,8 +48,17 @@ func proofText(p *Plan) string {
 	return text + "\nValidate linkage rechecks the current issue, selected outcome, base and PR tree against this receipt; it does not rerun the sandbox."
 }
 func intentReport(repo string, n int, p *Plan, conclusion, reason string) CheckReport {
-	return CheckReport{ID: p.IntentCheckID, Head: p.CheckHead, Key: p.ID + ":" + p.PatchHash + ":intent", Name: "Trajectory / Intent", Conclusion: conclusion, Title: reason, Summary: deliverySummary(repo, n, p), Text: proofText(p) + fmt.Sprintf("\n\nIntent reviewer: @%s\n\nConfirm intent means the reviewer has assessed whether this proof resolves the linked issue. Merge uses GitHub's normal PR review and branch rules.", p.IntentConfirmedBy), DetailsURL: fmt.Sprintf("https://github.com/%s/issues/%d", repo, n), Actions: []CheckAction{{"Confirm intent", "Connect this proof to the issue intent", "confirm_intent"}}}
+	reviewer := "Awaiting review"
+	if p.IntentConfirmedBy != "" {
+		reviewer = "@" + p.IntentConfirmedBy
+	}
+	actions := []CheckAction{}
+	if conclusion == "action_required" {
+		actions = append(actions, CheckAction{"Confirm intent", "Connect this proof to the issue intent", "confirm_intent"})
+	}
+	return CheckReport{ID: p.IntentCheckID, Head: p.CheckHead, Key: p.ID + ":" + p.PatchHash + ":intent", Name: "Trajectory / Intent", Conclusion: conclusion, Title: reason, Summary: deliverySummary(repo, n, p), Text: proofText(p) + "\n\nIntent reviewer: " + reviewer + "\n\nConfirm intent means the reviewer has assessed whether this proof resolves the linked issue. Merge uses GitHub's normal PR review and branch rules.", DetailsURL: fmt.Sprintf("https://github.com/%s/issues/%d", repo, n), Actions: actions}
 }
+
 func (e *Engine) invalidateIntent(ctx context.Context, inst int64, repo string, n int, p *Plan, reason string) error {
 	if p.Config.Delivery != "on-decision" || p.IntentCheckID == 0 {
 		return nil
@@ -112,7 +121,7 @@ func (e *Engine) ensureDeliveryChecks(ctx context.Context, inst int64, repo stri
 		conclusion = "success"
 		scope = "Independent boundary checks and patch linkage passed"
 	}
-	id, err := api.PutDeliveryCheck(ctx, inst, repo, CheckReport{ID: p.CheckID, Head: head, Key: p.ID + ":" + p.PatchHash + ":verification", Name: "Trajectory / Verification", Conclusion: conclusion, Title: scope, Summary: deliverySummary(repo, n, p), Text: proofText(p), DetailsURL: p.PR + "/files", Actions: []CheckAction{{"Validate linkage", "Recheck issue, decision and patched commit", "revalidate"}}})
+	id, err := api.PutDeliveryCheck(ctx, inst, repo, CheckReport{ID: p.CheckID, Head: head, Key: p.ID + ":" + p.PatchHash + ":verification", Name: "Trajectory / Verification", Conclusion: conclusion, Title: scope, Summary: deliverySummary(repo, n, p), Text: proofText(p), DetailsURL: p.PR + "/files", Actions: []CheckAction{{"Validate linkage", "Recheck intent, decision and PR tree", "revalidate"}}})
 	if err != nil {
 		return err
 	}
@@ -244,4 +253,19 @@ func (c *Client) PutDeliveryCheck(ctx context.Context, inst int64, repo string, 
 		return 0, fmt.Errorf("invalid delivery check ID")
 	}
 	return out.ID, nil
+}
+
+func (e *Engine) announceOutcome(ctx context.Context, inst int64, repo string, n int, p *Plan) error {
+	if p.OutcomeAnnounced {
+		return nil
+	}
+	msg := fmt.Sprintf("### Outcome: %s\n\n[Draft pull request](%s) · [Verification and intent review](%s/checks)\n\nThe selected decision has a patched branch. Review its proof in Checks before merging.", selectedTitle(p), p.PR, p.PR)
+	if p.PreviousPR != "" && p.PreviousPR != p.PR {
+		msg += "\n\n[Earlier outcome](" + p.PreviousPR + ") · intent confirmation superseded."
+	}
+	if err := e.api.Comment(ctx, inst, repo, n, msg); err != nil {
+		return err
+	}
+	p.OutcomeAnnounced = true
+	return e.save()
 }

@@ -53,6 +53,7 @@ type Config struct {
 	Choices    []Choice `json:"choices"`
 }
 type Plan struct {
+	OutcomeAnnounced                                                  bool
 	IntentCheckID                                                     int64
 	PreviousPR, IntentConfirmedBy, IntentTitle                        string
 	Generated                                                         *repair.Result
@@ -603,7 +604,10 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		}
 		if p.Config.Delivery == "on-decision" {
 			if p.Choice == selected.ID && p.PR != "" {
-				return e.ensureCheck(ctx, inst, repo, p)
+				if err := e.ensureCheck(ctx, inst, repo, p); err != nil {
+					return err
+				}
+				return e.announceOutcome(ctx, inst, repo, n, p)
 			}
 			if err := e.invalidateIntent(ctx, inst, repo, n, p, "Superseded by a new decision"); err != nil {
 				return err
@@ -684,6 +688,7 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		p.Files = files
 		p.Generated = generated
 		p.Diff = diff
+		p.OutcomeAnnounced = false
 		p.PreviousPR = p.PR
 		p.PR = ""
 		p.CheckID, p.CheckHead = 0, ""
@@ -798,7 +803,7 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 		return err
 	}
 	if p.Config.Delivery == "on-decision" {
-		return e.api.Comment(ctx, inst, repo, n, fmt.Sprintf("### Outcome: %s\n\n[Draft pull request](%s) · [Verification and intent review](%s/checks)\n\nThe selected decision has a patched branch. Review its proof in Checks before merging.", p.Choice, pr, pr))
+		return e.announceOutcome(ctx, inst, repo, n, p)
 	}
 	return e.api.Comment(ctx, inst, repo, n, "Draft PR: "+pr+"\nPatch: `"+p.PatchHash+"`")
 }
