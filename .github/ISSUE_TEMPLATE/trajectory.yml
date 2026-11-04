@@ -1,0 +1,37 @@
+name: Propose an improvement
+description: Describe a problem and the outcome you want Trajectory to explore.
+labels: [trajectory]
+body:
+  - type: markdown
+    attributes:
+      value: Tell us about the experience you want to improve. Trajectory will offer reviewable choices after the issue is created.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the friction or experience you want to improve.
+      placeholder: A customer cancelled renewal and immediately lost access they had already paid for.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What should happen instead?
+      description: Describe the result you want in everyday language.
+      placeholder: Let the customer use the service through the end of their paid period.
+    validations:
+      required: true
+  - type: textarea
+    id: affected
+    attributes:
+      label: Who is affected?
+      description: Who experiences the problem or would benefit from the improvement?
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Useful context
+      description: Add examples, constraints, or links that would help someone review the outcome.
+    validations:
+      required: false

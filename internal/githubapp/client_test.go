@@ -616,8 +616,11 @@ func TestDeliveryChecksKeepEvidenceNativeAndReconcileRetries(t *testing.T) {
 		}
 		var body struct {
 			Name, Conclusion, DetailsURL string
-			Output                       struct{ Title, Summary, Text string }
-			Actions                      []CheckAction
+			Output                       struct {
+				Title, Summary, Text string
+				Annotations          []CheckAnnotation
+			}
+			Actions []CheckAction
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
@@ -626,14 +629,20 @@ func TestDeliveryChecksKeepEvidenceNativeAndReconcileRetries(t *testing.T) {
 			t.Errorf("missing native evidence: %+v", body)
 		}
 		if r.Method == "POST" {
+			if len(body.Output.Annotations) != 1 || body.Output.Annotations[0].Path != "access.go" {
+				t.Error("missing initial annotation")
+			}
 			posts++
 			created = true
 		} else if r.Method == "PATCH" {
+			if len(body.Output.Annotations) != 0 {
+				t.Error("retry duplicated annotations")
+			}
 			patches++
 		}
 		fmt.Fprint(w, `{"id":123}`)
 	})
-	report := CheckReport{Head: "head", Key: "receipt", Name: "Trajectory / Intent", Conclusion: "action_required", Title: "Review intent", Summary: "Issue intent", Text: "raw test output", Actions: []CheckAction{{"Confirm intent", "Connect proof to intent", "confirm_intent"}}}
+	report := CheckReport{Head: "head", Key: "receipt", Name: "Trajectory / Intent", Conclusion: "action_required", Title: "Review intent", Summary: "Issue intent", Text: "raw test output", Actions: []CheckAction{{"Confirm intent", "Connect proof to intent", "confirm_intent"}}, Annotations: []CheckAnnotation{{Path: "access.go", StartLine: 1, EndLine: 1, AnnotationLevel: "notice", Message: "verified"}}}
 	for i := 0; i < 2; i++ {
 		id, err := c.PutDeliveryCheck(context.Background(), 7, "acme/project", report)
 		if err != nil || id != 123 {

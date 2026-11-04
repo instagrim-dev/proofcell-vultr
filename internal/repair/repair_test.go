@@ -88,6 +88,10 @@ func TestUnixTransportPreservesCandidateAndReceipt(t *testing.T) {
 	if got.RequestID != "call-2" || got.SourceSHA256 != digest(got.Source) {
 		t.Fatal("transport did not preserve candidate identity")
 	}
+	ev, err := (Client{Socket: socket}).Verify(context.Background(), "end", got.Source)
+	if err != nil || ev.Output != "PASS" {
+		t.Fatalf("sandbox re-run transport: %+v %v", ev, err)
+	}
 }
 
 func TestRefundDecisionUsesImmediateAccessAndSandbox(t *testing.T) {

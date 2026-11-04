@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -24,8 +27,36 @@ type CheckReport struct {
 	Name                             string `json:"name"`
 	Conclusion                       string `json:"conclusion"`
 	Title, Summary, Text, DetailsURL string
-	Actions                          []CheckAction `json:"actions"`
+	Actions                          []CheckAction     `json:"actions"`
+	Annotations                      []CheckAnnotation `json:"-"`
 }
+type CheckAnnotation struct {
+	Path            string `json:"path"`
+	StartLine       int    `json:"start_line"`
+	EndLine         int    `json:"end_line"`
+	AnnotationLevel string `json:"annotation_level"`
+	Title           string `json:"title"`
+	Message         string `json:"message"`
+}
+
+func proofAnnotations(p *Plan) []CheckAnnotation {
+	if p.Generated == nil {
+		return nil
+	}
+	fs := token.NewFileSet()
+	f, err := parser.ParseFile(fs, "access.go", p.Files["access.go"], 0)
+	if err != nil {
+		return nil
+	}
+	for _, d := range f.Decls {
+		if fn, ok := d.(*ast.FuncDecl); ok && fn.Name.Name == "HasAccess" {
+			line := fs.Position(fn.Pos()).Line
+			return []CheckAnnotation{{Path: "access.go", StartLine: line, EndLine: line, AnnotationLevel: "notice", Title: "Access behavior checked", Message: "Independent sandbox tests passed for the four tested expiry-boundary inputs. See the Verification check for details."}}
+		}
+	}
+	return nil
+}
+
 type deliveryAPI interface {
 	PutDeliveryCheck(context.Context, int64, string, CheckReport) (int64, error)
 }
@@ -73,12 +104,16 @@ func proofText(p *Plan) string {
 		g := p.Generated
 		text += fmt.Sprintf("\nIndependent sandbox checks the bounded access function at expiry boundaries.\n\n| Provenance | Value |\n|---|---|\n| Model | `%s` |\n| Inference response | `%s` |\n| Candidate SHA-256 | `%s` |\n| Test SHA-256 | `%s` |\n| Host canary preserved | `%t` |\n| Sandbox removed | `%t` |\n\n### Actual test output\n\n```text\n%s\n```\n", g.Model, g.RequestID, g.SourceSHA256, g.Evidence.TestsSHA256, g.Evidence.CanaryPreserved, g.Evidence.CleanupConfirmed, strings.ReplaceAll(g.Evidence.Output, "```", "'''"))
 	}
+	rerun := ""
+	if p.SandboxReruns > 0 {
+		rerun = "\n\nSandbox re-run: the current candidate was independently tested again without generating a new patch."
+	}
 	return "### Outcome and observed checks\n\n**Selected outcome:** " + selectedTitle(p) + "\n\nThe declared JSON checks and exact PR tree comparison passed." + func() string {
 		if p.Generated != nil {
 			return " Independent sandbox boundary tests passed; the host canary remained intact and the container was removed."
 		}
 		return ""
-	}() + "\n\n" + text + "\nValidate linkage rechecks the current issue, selected outcome, base and PR tree against this receipt; it does not rerun the sandbox."
+	}() + rerun + "\n\n" + text + "\nValidate linkage rechecks the current issue, selected outcome, base and PR tree against this receipt; it does not rerun the sandbox."
 }
 func intentReport(repo string, n int, p *Plan, conclusion, reason string) CheckReport {
 	reviewer := "Awaiting review"
@@ -168,7 +203,7 @@ func (e *Engine) ensureDeliveryChecks(ctx context.Context, inst int64, repo stri
 		conclusion = "success"
 		scope = "Independent boundary checks and patch linkage passed"
 	}
-	id, err := api.PutDeliveryCheck(ctx, inst, repo, CheckReport{ID: p.CheckID, Head: head, Key: p.ID + ":" + p.PatchHash + ":verification", Name: "Trajectory / Verification", Conclusion: conclusion, Title: scope, Summary: deliverySummary(repo, n, p) + proofSummary(p), Text: proofText(p), DetailsURL: p.PR + "/files", Actions: []CheckAction{{"Validate linkage", "Recheck intent, decision and PR tree", "revalidate"}}})
+	id, err := api.PutDeliveryCheck(ctx, inst, repo, CheckReport{ID: p.CheckID, Head: head, Key: p.ID + ":" + p.PatchHash + ":verification", Name: "Trajectory / Verification", Conclusion: conclusion, Title: scope, Summary: deliverySummary(repo, n, p) + proofSummary(p), Text: proofText(p), Annotations: proofAnnotations(p), DetailsURL: p.PR + "/files", Actions: []CheckAction{{"Validate linkage", "Recheck intent, decision and PR tree", "revalidate"}}})
 	if err != nil {
 		return err
 	}
@@ -199,7 +234,7 @@ func (e *Engine) processDeliveryCheck(ctx context.Context, ev Event, n int, p *P
 	if !allowed {
 		return fmt.Errorf("current repository write permission required")
 	}
-	if ev.RequestedAction.Identifier != "confirm_intent" && ev.RequestedAction.Identifier != "revalidate" {
+	if ev.Action != "rerequested" && ev.RequestedAction.Identifier != "confirm_intent" && ev.RequestedAction.Identifier != "revalidate" {
 		return nil
 	}
 	validate := func() error {
@@ -237,6 +272,32 @@ func (e *Engine) processDeliveryCheck(ctx context.Context, ev Event, n int, p *P
 	if err = validate(); err != nil {
 		_ = e.invalidateIntent(ctx, inst, repo, n, p, "Inputs changed: "+err.Error())
 		return err
+	}
+	if ev.Action == "rerequested" && ev.CheckRun.ID == p.CheckID && p.Generated != nil {
+		worker, ok := e.Repairer.(interface {
+			Verify(context.Context, string, []byte) (repair.Evidence, error)
+		})
+		var evidence repair.Evidence
+		var err error
+		if ok {
+			evidence, err = worker.Verify(ctx, p.Choice, p.Generated.Source)
+		} else {
+			err = fmt.Errorf("sandbox unavailable")
+		}
+		if err != nil || !validBoundaryReceipt(p.Choice, evidence) {
+			_ = e.invalidateIntent(ctx, inst, repo, n, p, "Sandbox re-run failed")
+			api := e.api.(deliveryAPI)
+			_, updateErr := api.PutDeliveryCheck(ctx, inst, repo, CheckReport{ID: p.CheckID, Head: p.CheckHead, Key: p.ID + ":" + p.PatchHash + ":verification", Name: "Trajectory / Verification", Conclusion: "failure", Title: "Sandbox re-run could not be verified", Summary: "The existing candidate could not be verified by a fresh independent sandbox run.", DetailsURL: p.PR + "/files"})
+			if updateErr != nil {
+				return updateErr
+			}
+			return nil
+		}
+		p.Generated.Evidence = evidence
+		p.SandboxReruns++
+		if err := e.save(); err != nil {
+			return err
+		}
 	}
 	if ev.RequestedAction.Identifier == "confirm_intent" {
 		if ev.CheckRun.ID != p.IntentCheckID {
@@ -294,7 +355,11 @@ func (c *Client) PutDeliveryCheck(ctx context.Context, inst int64, repo string, 
 		method = http.MethodPatch
 		route += "/" + strconv.FormatInt(r.ID, 10)
 	}
-	body := map[string]any{"name": r.Name, "head_sha": r.Head, "external_id": r.Key, "status": "completed", "conclusion": r.Conclusion, "details_url": r.DetailsURL, "output": map[string]string{"title": r.Title, "summary": r.Summary, "text": r.Text}, "actions": r.Actions}
+	output := map[string]any{"title": r.Title, "summary": r.Summary, "text": r.Text}
+	if r.ID == 0 && len(r.Annotations) > 0 {
+		output["annotations"] = r.Annotations
+	}
+	body := map[string]any{"name": r.Name, "head_sha": r.Head, "external_id": r.Key, "status": "completed", "conclusion": r.Conclusion, "details_url": r.DetailsURL, "output": output, "actions": r.Actions}
 	if method == http.MethodPatch {
 		delete(body, "head_sha")
 	}

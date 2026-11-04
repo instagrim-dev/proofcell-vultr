@@ -54,6 +54,7 @@ type Config struct {
 	Choices    []Choice `json:"choices"`
 }
 type Plan struct {
+	SandboxReruns                                                     int
 	StatusCommentID                                                   int64
 	PreviousChoice                                                    string
 	OutcomeAnnounced                                                  bool
@@ -91,6 +92,9 @@ type Event struct {
 	Issue struct {
 		Number      int             `json:"number"`
 		PullRequest json.RawMessage `json:"pull_request"`
+		Labels      []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
 	} `json:"issue"`
 	Comment struct {
 		Body string `json:"body"`
@@ -216,9 +220,18 @@ func (e *Engine) Handler(secret string) http.Handler {
 			return
 		}
 		ev.Kind = r.Header.Get("X-GitHub-Event")
-		isIssue := ev.Kind == "issues" && ((ev.Action == "labeled" && ev.Label.Name == "trajectory") || ev.Action == "edited" || ev.Action == "closed")
+		openedTrajectory := false
+		if ev.Kind == "issues" && ev.Action == "opened" {
+			for _, label := range ev.Issue.Labels {
+				if label.Name == "trajectory" {
+					openedTrajectory = true
+					break
+				}
+			}
+		}
+		isIssue := ev.Kind == "issues" && (openedTrajectory || (ev.Action == "labeled" && ev.Label.Name == "trajectory") || ev.Action == "edited" || ev.Action == "closed")
 		isComment := ev.Kind == "issue_comment" && ((ev.Action == "created" && ev.Comment.User.Type != "Bot" && strings.HasPrefix(strings.TrimSpace(ev.Comment.Body), "/trajectory ")) || ev.Action == "edited") && (len(ev.Issue.PullRequest) == 0 || string(ev.Issue.PullRequest) == "null")
-		isCheck := ev.Kind == "check_run" && ev.Action == "requested_action"
+		isCheck := ev.Kind == "check_run" && (ev.Action == "requested_action" || ev.Action == "rerequested")
 		if !isIssue && !isComment && !isCheck {
 			w.WriteHeader(202)
 			return
