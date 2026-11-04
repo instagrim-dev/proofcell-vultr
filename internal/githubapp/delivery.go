@@ -202,7 +202,13 @@ func (e *Engine) processDeliveryCheck(ctx context.Context, ev Event, n int, p *P
 		}
 		p.IntentConfirmedBy = ev.Sender.Login
 	}
-	return e.ensureDeliveryChecks(ctx, inst, repo, n, p)
+	if err := e.ensureDeliveryChecks(ctx, inst, repo, n, p); err != nil {
+		return err
+	}
+	if ev.RequestedAction.Identifier == "confirm_intent" && p.StatusCommentID != 0 {
+		return e.announceOutcome(ctx, inst, repo, n, p)
+	}
+	return nil
 }
 
 // PutDeliveryCheck reconciles a receipt on a specific commit before writing it.
@@ -275,7 +281,11 @@ func (e *Engine) announceOutcome(ctx context.Context, inst int64, repo string, n
 		msg += "\n\n[Earlier outcome: " + label + "](" + p.PreviousPR + ") · intent confirmation superseded."
 	}
 	if p.StatusCommentID != 0 {
-		if err := e.deliveryStatus(ctx, inst, repo, n, p, "Ready for intent review", msg); err != nil {
+		state := "Ready for intent review"
+		if p.IntentConfirmedBy != "" {
+			state = "Intent confirmed"
+		}
+		if err := e.deliveryStatus(ctx, inst, repo, n, p, state, msg); err != nil {
 			return err
 		}
 	} else if err := e.api.Comment(ctx, inst, repo, n, msg); err != nil {

@@ -225,3 +225,24 @@ func TestRepeatedSelectionRepairsStaleStatus(t *testing.T) {
 		t.Fatal("retry created duplicate draft")
 	}
 }
+
+func TestConfirmedIntentUpdatesStatus(t *testing.T) {
+	e, f, p := deliverySetup(t)
+	sf := &statusDeliveryFake{deliveryFake: f}
+	e.api = sf
+	if err := selectOutcome(e, f, p, "keep"); err != nil {
+		t.Fatal(err)
+	}
+	if err := confirmIntent(e, p); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.bodies[p.StatusCommentID], "Intent confirmed") {
+		t.Fatal("status does not reflect confirmed intent")
+	}
+	if err := selectOutcome(e, f, p, "keep"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.bodies[p.StatusCommentID], "Intent confirmed") {
+		t.Fatal("replay regressed confirmed status")
+	}
+}
