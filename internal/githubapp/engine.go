@@ -431,6 +431,18 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 				return err
 			}
 			if current != ev.Comment.Body {
+				// A queued clear is still a real decision transition, even when
+				// the owner has already selected again. Do not process the stale
+				// choice, but revoke any confirmation based on the old selection.
+				if ev.Comment.ID == p.DecisionComment && ev.Comment.Body == p.DecisionBody && p.IntentConfirmedBy != "" {
+					if err := e.invalidateIntent(ctx, inst, repo, n, p, "Decision selection changed"); err != nil {
+						return err
+					}
+					if err := e.ensureDeliveryChecks(ctx, inst, repo, n, p); err != nil {
+						return err
+					}
+					return e.announceOutcome(ctx, inst, repo, n, p)
+				}
 				return nil
 			}
 		}
@@ -454,6 +466,11 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 				p.PublishComment, p.PublishBody, p.PublishPatch = 0, "", ""
 				if err := e.save(); err != nil {
 					return err
+				}
+				if p.Config.Delivery == "on-decision" && p.StatusCommentID != 0 {
+					if err := e.deliveryStatus(ctx, inst, repo, n, p, "No outcome selected", "The earlier intent confirmation is invalidated. Select one outcome to continue."); err != nil {
+						return err
+					}
 				}
 				if strings.Count(strings.ToLower(ev.Comment.Body), "[x]") > 1 {
 					return e.api.Comment(ctx, inst, repo, n, "Select one option: clear the other checkbox first.")
@@ -669,7 +686,7 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 				if err != nil {
 					return err
 				}
-				if hash(result.Source) != result.SourceSHA256 || !result.Evidence.CanaryPreserved || !result.Evidence.CleanupConfirmed || result.RequestID == "" {
+				if hash(result.Source) != result.SourceSHA256 || !validBoundaryReceipt(selected.ID, result.Evidence) || result.RequestID == "" {
 					return fmt.Errorf("invalid generated candidate receipt")
 				}
 				generated = &result
@@ -707,6 +724,11 @@ func (e *Engine) process(ctx context.Context, ev Event) error {
 			b, _ := json.Marshal(check.Equals)
 			if !ok || string(a) != string(b) {
 				return fmt.Errorf("declared JSON check failed: %s/%s", check.Path, check.Key)
+			}
+		}
+		if p.Config.Generation == "vultr-go-access-v1" && selected.ID == "refund" {
+			if err := verifyExactProration(files["subscription.json"]); err != nil {
+				return err
 			}
 		}
 		encoded, _ := json.Marshal(files)

@@ -15,7 +15,7 @@ func (f generatedFake) Repair(_ context.Context, _ string, _ []byte) (repair.Res
 		return repair.Result{}, fmt.Errorf("verification failed")
 	}
 	src := []byte("package subscription\nfunc HasAccess(paidUntil, now int64) bool { return now < paidUntil }\n")
-	return repair.Result{Source: src, SourceSHA256: hash(src), Model: "test", RequestID: "req-1", Evidence: repair.Evidence{TestsSHA256: strings.Repeat("b", 64), CanaryPreserved: true, CleanupConfirmed: true}}, nil
+	return repair.Result{Source: src, SourceSHA256: hash(src), Model: "test", RequestID: "req-1", Evidence: repair.Evidence{TestsSHA256: repair.BoundaryTestsSHA256("keep"), Output: "--- PASS: TestBoundary/before_expiry \n--- PASS: TestBoundary/at_expiry \n--- PASS: TestBoundary/after_expiry \n--- PASS: TestBoundary/different_expiry \n", CanaryPreserved: true, CleanupConfirmed: true}}, nil
 }
 
 type generationAPI struct{ *nativeFake }

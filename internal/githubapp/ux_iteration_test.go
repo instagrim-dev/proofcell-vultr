@@ -23,10 +23,14 @@ func TestDecisionCardKeepsCanonicalCheckboxesAndDescriptions(t *testing.T) {
 }
 
 func TestAccessDemoDefaultsAreScopedToGenerationMode(t *testing.T) {
-	cfg := Config{Generation: "vultr-go-access-v1", Choices: []Choice{{ID: "keep", Title: "Keep"}, {ID: "refund", Title: "Refund"}}}
+	cfg := Config{Generation: "vultr-go-access-v1", Choices: []Choice{{ID: "keep", Title: "Keep", Changes: []Change{{Path: "subscription.json", Content: `{"renewal_enabled":false,"access_granted":true,"access_ends":"paid_period_end"}`}}, Checks: []Check{{Path: "subscription.json", Key: "renewal_enabled", Equals: false}, {Path: "subscription.json", Key: "access_granted", Equals: true}, {Path: "subscription.json", Key: "access_ends", Equals: "paid_period_end"}}}}}
 	body := decisionComment("plan", cfg)
-	if !strings.Contains(body, "Would keep access until the paid period ends") || !strings.Contains(body, "proposed prorated refund") {
+	if !strings.Contains(body, "Would keep access until the paid period ends") {
 		t.Fatal(body)
+	}
+	cfg.Choices[0].Changes[0].Content = `{"renewal_enabled":true,"access_granted":true,"access_ends":"paid_period_end"}`
+	if strings.Contains(decisionComment("plan", cfg), "Would keep access") {
+		t.Fatal("contradictory patch got default description")
 	}
 	cfg.Generation = ""
 	if strings.Contains(decisionComment("plan", cfg), "paid period") {
@@ -71,7 +75,7 @@ func TestDescribedDecisionSelectionAndReselection(t *testing.T) {
 func TestProofSummariesAreSpecificToVerifiedEvidence(t *testing.T) {
 	out := "--- PASS: TestBoundary/before_expiry (0.00s)\n--- PASS: TestBoundary/at_expiry (0.00s)\n--- PASS: TestBoundary/after_expiry (0.00s)\n--- PASS: TestBoundary/different_expiry (0.00s)\n"
 	for _, tc := range []struct{ choice, want string }{{"keep", "allowed just before expiry"}, {"refund", "denied just before expiry"}} {
-		p := &Plan{Choice: tc.choice, CheckHead: "abcdef123456", Generated: &repair.Result{Evidence: repair.Evidence{TestsSHA256: repair.BoundaryTestsSHA256(tc.choice), Output: out}}}
+		p := &Plan{Choice: tc.choice, CheckHead: "abcdef123456", Generated: &repair.Result{Evidence: repair.Evidence{TestsSHA256: repair.BoundaryTestsSHA256(tc.choice), Output: out, CanaryPreserved: true, CleanupConfirmed: true}}}
 		s := proofSummary(p)
 		if !strings.Contains(s, tc.want) || !strings.Contains(s, "2/2") || !strings.Contains(s, "abcdef123456") {
 			t.Fatalf("%s: %s", tc.choice, s)

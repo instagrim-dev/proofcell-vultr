@@ -41,21 +41,31 @@ func selectedTitle(p *Plan) string {
 func deliverySummary(repo string, n int, p *Plan) string {
 	return fmt.Sprintf("**Intent:** [#%d — %s](https://github.com/%s/issues/%d)\n\n**Decision:** %s\n\n**Outcome:** [Draft pull request](%s)\n\nQuestion: %s", n, p.IntentTitle, repo, n, selectedTitle(p), p.PR, p.Config.Question)
 }
-func proofSummary(p *Plan) string {
-	if p.Generated == nil || repair.BoundaryTestsSHA256(p.Choice) == "" || p.Generated.Evidence.TestsSHA256 != repair.BoundaryTestsSHA256(p.Choice) {
-		return ""
+func validBoundaryReceipt(choice string, ev repair.Evidence) bool {
+	if repair.BoundaryTestsSHA256(choice) == "" || ev.TestsSHA256 != repair.BoundaryTestsSHA256(choice) {
+		return false
 	}
-	out := p.Generated.Evidence.Output
+	out := ev.Output
 	for _, name := range []string{"before_expiry", "different_expiry", "at_expiry", "after_expiry"} {
 		if !strings.Contains(out, "--- PASS: TestBoundary/"+name+" ") {
-			return ""
+			return false
 		}
+	}
+	return ev.CanaryPreserved && ev.CleanupConfirmed
+}
+func proofSummary(p *Plan) string {
+	if p.Generated == nil || !validBoundaryReceipt(p.Choice, p.Generated.Evidence) {
+		return ""
 	}
 	before := "denied"
 	if p.Choice == "keep" {
 		before = "allowed"
 	}
-	return fmt.Sprintf("\n\n### What was checked\n\n| Expected in the access function | Observed in independent sandbox tests |\n| --- | --- |\n| Access is %s just before expiry. | Passed for both tested inputs (2/2). |\n| Access is denied at expiry and just after expiry. | Passed for both tested inputs (2/2). |\n\nFor PR head `%s`, configured JSON assertions and the PR tree comparison also passed. These tests exercise a bounded function, not a live customer account or billing system.", before, p.CheckHead)
+	proration := ""
+	if p.Choice == "refund" && verifyExactProration(p.Files["subscription.json"]) == nil {
+		proration = "\n\n**Refund example:** An independent exact-proration calculation passed for the recorded values. This does not execute a refund; non-integral amounts and rounding are not tested."
+	}
+	return fmt.Sprintf("\n\n### What was checked\n\n| Expected in the access function | Observed in independent sandbox tests |\n| --- | --- |\n| Access is %s just before expiry. | Passed for both tested inputs (2/2). |\n| Access is denied at expiry and just after expiry. | Passed for both tested inputs (2/2). |%s\n\nFor PR head `%s`, configured JSON assertions and the PR tree comparison also passed. These tests exercise a bounded function, not a live customer account or billing system.", before, proration, p.CheckHead)
 }
 func proofText(p *Plan) string {
 	text := fmt.Sprintf("### Binding\n\n| Evidence | Recorded value |\n|---|---|\n| Issue digest | `%s` |\n| Plan | `%s` |\n| Base commit | `%s` |\n| Patched commit | `%s` |\n| Patch SHA-256 | `%s` |\n\n### Verification scope\n\nRepository-defined file preimages and JSON assertions, plus exact PR tree comparison.\n", p.IssueDigest, p.ID, p.BaseSHA, p.CheckHead, p.PatchHash)
@@ -138,8 +148,22 @@ func (e *Engine) ensureDeliveryChecks(ctx context.Context, inst int64, repo stri
 	conclusion := "neutral"
 	scope := "Declared JSON and patch checks passed"
 	if p.Generated != nil {
-		if hash(p.Generated.Source) != p.Generated.SourceSHA256 || hash(p.Files["access.go"]) != p.Generated.SourceSHA256 || len(p.Generated.Evidence.TestsSHA256) != 64 || !p.Generated.Evidence.CanaryPreserved || !p.Generated.Evidence.CleanupConfirmed {
+		if hash(p.Generated.Source) != p.Generated.SourceSHA256 || hash(p.Files["access.go"]) != p.Generated.SourceSHA256 || !validBoundaryReceipt(p.Choice, p.Generated.Evidence) {
+			if p.CheckID != 0 {
+				_, updateErr := api.PutDeliveryCheck(ctx, inst, repo, CheckReport{ID: p.CheckID, Head: head, Key: p.ID + ":" + p.PatchHash + ":verification", Name: "Trajectory / Verification", Conclusion: "failure", Title: "Sandbox evidence could not be verified", Summary: deliverySummary(repo, n, p) + "\n\nThe sandbox receipt does not match the recognized test suite and recorded passing cases.", DetailsURL: p.PR + "/files"})
+				if updateErr != nil {
+					return updateErr
+				}
+			}
+			if err := e.invalidateIntent(ctx, inst, repo, n, p, "Verification evidence could not be verified"); err != nil {
+				return err
+			}
 			return fmt.Errorf("invalid sandbox receipt")
+		}
+		if p.Config.Generation == "vultr-go-access-v1" && p.Choice == "refund" {
+			if err := verifyExactProration(p.Files["subscription.json"]); err != nil {
+				return err
+			}
 		}
 		conclusion = "success"
 		scope = "Independent boundary checks and patch linkage passed"
@@ -288,7 +312,14 @@ func (e *Engine) announceOutcome(ctx context.Context, inst int64, repo string, n
 	if p.OutcomeAnnounced && p.StatusCommentID == 0 {
 		return nil
 	}
-	msg := fmt.Sprintf("### Outcome: %s\n\n[Draft pull request](%s) · [Verification and intent review](%s/checks)\n\nThe selected decision has a patched branch. Review its proof in Checks before merging.", selectedTitle(p), p.PR, p.PR)
+	review := "Declared checks passed; intent review is pending."
+	if p.Generated != nil {
+		review = "Verification passed; intent review is pending."
+	}
+	if p.IntentConfirmedBy != "" {
+		review = "Intent confirmed by @" + p.IntentConfirmedBy + "."
+	}
+	msg := fmt.Sprintf("### Outcome: %s\n\n[Draft pull request](%s) · [Verification](%s/checks?check_run_id=%d) · [Intent review](%s/checks?check_run_id=%d)\n\n%s Review the proof before merging.", selectedTitle(p), p.PR, p.PR, p.CheckID, p.PR, p.IntentCheckID, review)
 	if p.PreviousPR != "" && p.PreviousPR != p.PR {
 		label := p.PreviousChoice
 		for _, c := range p.Config.Choices {
